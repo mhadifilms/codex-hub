@@ -210,16 +210,24 @@ class HubIntegration(unittest.TestCase):
         self.wait_for(lambda: 'Made by mouse' in self.sidebar_text('2') and 'New chat' in self.sidebar_text('2'))
         self.wait_for(lambda: 'No chats yet' not in self.sidebar_text('2'))
         newest = self.account_window('2')
+        def chat_menu(label):
+            capture = subprocess.run(['tmux', '-S', str(hub.SOCKET), 'capture-pane', '-p', '-t',
+                                      self.account_window('2')['sidebar']], text=True, capture_output=True, check=True).stdout
+            lines = capture.splitlines()
+            folder = next(i for i, line in enumerate(lines) if 'Made by mouse' in line)
+            row = next(i for i in range(folder + 1, len(lines)) if label in lines[i] and '···' in lines[i])
+            self.sidebar_click('2', lines[row].index('···') + 1, row)
         type(self).output = b''
-        self.sidebar_click('2', 32, 16)
+        chat_menu('New chat')
         self.wait_for(lambda: b'Chat options' in type(self).output)
         popup_click(8, 6)
         os.write(self.fd, b'\x15Renamed by mouse')
+        self.wait_for(lambda: b'Renamed by mouse' in type(self).output)
         popup_click(10, 8)
         self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
         self.wait_for(lambda: 'Renamed by mouse' in self.sidebar_text('2'))
         type(self).output = b''
-        self.sidebar_click('2', 32, 16)
+        chat_menu('Renamed by mouse')
         self.wait_for(lambda: b'Chat options' in type(self).output)
         popup_click(12, 13)
         self.wait_for(lambda: b'Confirm close' in type(self).output)
