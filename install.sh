@@ -37,6 +37,7 @@ install -m 600 "$repo_dir/tmux.conf" "$root/tmux.conf"
 if tmux -S "$root/tmux.sock" has-session 2>/dev/null; then
   tmux -S "$root/tmux.sock" source-file "$root/tmux.conf"
   "$prefix/bin/codex-hub" setup --reload
+  printf 'Existing chats keep their frontend until reloaded. Use the chat menu or codex-hub reload ACCOUNT after stopping active work.\n'
 fi
 printf 'Installed Codex Hub %s. Run %s/bin/codex-hub.\n' "$(cat "$repo_dir/VERSION")" "$prefix"
 case ":$PATH:" in *":$prefix/bin:"*) ;; *) printf 'Add %s/bin to PATH for convenient access.\n' "$prefix" ;; esac

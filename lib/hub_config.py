@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 
 AUTH_ENV = ('OPENAI_API_KEY', 'CODEX_ACCESS_TOKEN', 'CODEX_API_KEY',
@@ -28,11 +29,13 @@ def validate(data):
         raise ValueError('Unsupported config version; expected schemaVersion 1.')
     if type(data.get('scrollLines', 1)) is not int or not 1 <= data.get('scrollLines', 1) <= 20:
         raise ValueError('scrollLines must be an integer from 1 to 20.')
+    if 'codexBinary' in data and (not isinstance(data['codexBinary'], str) or not data['codexBinary'].strip()):
+        raise ValueError('codexBinary must be an executable path or command name.')
     accounts = data.get('accounts')
     if not isinstance(accounts, dict) or not accounts:
         raise ValueError('Configure at least one account.')
     for ident, account in accounts.items():
-        if not ID_PATTERN.fullmatch(ident) or ident in ('all', 'main', 'attach', 'tui', 'setup', 'list', 'new', 'resume', 'cli', 'accounts', 'settings', 'usage', 'config', 'sidebar', 'welcome', 'picker', 'manage', 'chat', 'account-login'):
+        if not ID_PATTERN.fullmatch(ident) or ident in ('all', 'main', 'attach', 'tui', 'setup', 'reload', 'doctor', 'list', 'new', 'resume', 'cli', 'accounts', 'settings', 'usage', 'config', 'sidebar', 'welcome', 'picker', 'manage', 'chat', 'account-login'):
             raise ValueError('Account IDs must be unique command-safe names (letters, numbers, _ or -).')
         if not isinstance(account, dict) or not isinstance(account.get('label'), str) or not account['label'].strip():
             raise ValueError('Each account needs a label.')
@@ -116,6 +119,22 @@ def environment(ident, root=ROOT):
 
 def session(ident, root=ROOT):
     return load(root)['accounts'][ident].get('session', 'codex-hub-' + ident)
+
+
+def executable(root=ROOT):
+    selected = os.environ.get('CODEX_HUB_CODEX') or load(root).get('codexBinary') or 'codex'
+    path = shutil.which(str(Path(selected).expanduser()))
+    if not path:
+        raise ValueError(f'Codex executable unavailable: {selected}. Set codexBinary in the hub config.')
+    return path
+
+
+def preferences(root=ROOT, **values):
+    with locked(root):
+        data = load(root)
+        data.update(values)
+        save(data, root)
+    return data
 
 
 def add(ident, label=None, codex_home=None, description='', root=ROOT):

@@ -1,15 +1,28 @@
 """Portable configuration and native Markdown behavior checks."""
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import hub_config
 from hub_markdown import render
 
 
 class ConfigTests(unittest.TestCase):
+    def test_explicit_backend_and_scroll_preferences(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            hub_config.initialize(root)
+            hub_config.preferences(root, codexBinary=sys.executable, scrollLines=3)
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(hub_config.executable(root), sys.executable)
+            self.assertEqual(hub_config.load(root)['scrollLines'], 3)
+            with self.assertRaises(ValueError):
+                hub_config.preferences(root, scrollLines=0)
+
     def test_arbitrary_accounts_and_defaults(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

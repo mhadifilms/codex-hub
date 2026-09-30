@@ -52,7 +52,7 @@ def tmux(*args, check=True):
 
 
 def command(*args):
-    return shlex.join([str(SELF), *map(str, args)])
+    return shlex.join([sys.executable, str(SELF), *map(str, args)])
 
 
 def state():
@@ -107,10 +107,10 @@ def toggle_pin(slot, key):
 
 
 def windows():
-    keys = ('id', 'session', 'name', 'pane', 'path', 'kind', 'thread', 'sidebar')
+    keys = ('id', 'session', 'name', 'pane', 'path', 'kind', 'thread', 'sidebar', 'engine', 'version', 'busy')
     fmt = '\t'.join(('#{window_id}', '#{session_name}', '#{window_name}',
                      '#{@hub_main}', '#{@hub_project}', '#{@hub_kind}',
-                     '#{@hub_thread}', '#{@hub_sidebar}'))
+                     '#{@hub_thread}', '#{@hub_sidebar}', '#{@hub_engine}', '#{@hub_version}', '#{@hub_busy}'))
     rows = []
     for line in tmux('list-windows', '-a', '-F', fmt).splitlines():
         fields = line.split('\t')
@@ -247,7 +247,7 @@ def new_chat(slot, path, title='New chat', thread=None, resume_picker=False, pro
                 focus(existing)
             return
     native = not (legacy or resume_picker or os.environ.get('CODEX_HUB_CHAT') == 'cli')
-    args = [str(SELF), 'chat', slot, str(path), thread or ''] if native else ['codex']
+    args = [sys.executable, str(SELF), 'chat', slot, str(path), thread or ''] if native else [hub_config.executable(ROOT)]
     if not native and (thread or resume_picker):
         args += ['resume', thread or '--all']
     if not native:
@@ -266,6 +266,22 @@ def new_chat(slot, path, title='New chat', thread=None, resume_picker=False, pro
     remember(slot, path)
     if not background:
         focus(next(w for w in windows() if w['id'] == wid))
+
+
+def reload_chat(window, force=False):
+    if window['engine'] != 'tui' or not window['thread']:
+        raise ValueError('Only a connected enhanced chat can be reloaded.')
+    if window['busy'] == '1' or not force and window['busy'] != '0':
+        raise ValueError('Stop the turn and resolve pending requests before reloading. Older chats need explicit restart confirmation.')
+    # SIGTERM lets the frontend persist its draft/queue and close its backend.
+    pid = int(tmux('display-message', '-p', '-t', window['pane'], '#{pane_pid}'))
+    os.kill(pid, signal.SIGTERM)
+    until = time.monotonic() + 6
+    while tmux('display-message', '-p', '-t', window['pane'], '#{pane_dead}') != '1':
+        if time.monotonic() >= until:
+            raise ValueError('Chat is still closing; reload again after it stops.')
+        time.sleep(.05)
+    tmux('respawn-pane', '-t', window['pane'], command('chat', window['slot'], window['path'], window['thread']))
 
 
 class Surface:
@@ -373,6 +389,7 @@ class Surface:
         return self.screen.getmaxyx()
 
     def event(self):
+        self.scroll_event = False
         self.screen.refresh()
         try:
             key = self.screen.get_wch()
@@ -385,8 +402,10 @@ class Surface:
                 return None
             if button & curses.BUTTON4_PRESSED:
                 self.offset = max(0, self.offset - self.scroll_step)
+                self.scroll_event = True
             elif button & getattr(curses, 'BUTTON5_PRESSED', 0):
                 self.offset += self.scroll_step
+                self.scroll_event = True
             else:
                 hit = next((action for top, left, height, width, action in reversed(self.hits)
                             if top <= y < top + height and left <= x < left + width), None)
@@ -489,6 +508,7 @@ class Sidebar(Surface):
                             *(w['path'] for w in self.live if w['path']),
                             *(r['cwd'] for r in self.saved)]))
         self.current = next((w['id'] for w in self.live if w['sidebar'] == os.environ.get('TMUX_PANE')), '')
+        self.upgrade = next((w for w in self.live if w['id'] == self.current and w['engine'] == 'tui' and w['thread'] and w['version'] != hub_config.VERSION), None)
 
     def rows(self):
         rows = []
@@ -570,10 +590,12 @@ class Sidebar(Surface):
         if not rows:
             self.text(12, 2, 'No matching chats' if self.fields.get('search') else 'Your projects live here.', 2, w - 4)
         self.text(h - 6, 2, self.message or self.history_error, 6, w - 4)
+        if self.upgrade:
+            self.button(h - 6, 2, w - 4, '↻ Update this chat', ('upgrade',), quiet=True, align='left')
         self.divider(h - 5, 2, w - 4)
         self.button(h - 4, 2, w - 4, LABELS[self.slot][0] + ' · Settings', ('settings',), quiet=True, align='left')
         self.text(h - 3, 2, self.shorten(LABELS[self.slot][1], w - 4), 2, w - 4)
-        self.text(h - 2, 2, 'Local', 2)
+        self.text(h - 2, 2, 'v' + hub_config.VERSION, 2)
         self.button(h - 2, w // 2 + 1, w // 2 - 3, 'Detach', ('detach',), quiet=True)
 
     def run(self):
@@ -622,6 +644,8 @@ class Sidebar(Surface):
                     new_chat(self.slot, row['cwd'], row['title'], row['id'])
                 elif kind == 'manage':
                     self.popup('manage', action[1])
+                elif kind == 'upgrade' and self.upgrade:
+                    self.popup('manage', self.upgrade['id'])
                 elif kind == 'home':
                     focus(next(w for w in self.live if w['kind'] == 'home'))
                 elif kind == 'detach':
@@ -782,6 +806,13 @@ class Chat(Surface):
             self.snapshot = self.runtime.thread(self.slot, self.ident)
         self.window_id = tmux('display-message', '-p', '-t', os.environ['TMUX_PANE'], '#{window_id}')
         tmux('set-option', '-w', '-t', self.window_id, '@hub_thread', self.ident)
+        tmux('set-option', '-w', '-t', self.window_id, '@hub_version', hub_config.VERSION)
+        self.backend_binary = getattr(client, 'binary', hub_config.executable(ROOT))
+        try:
+            self.backend_version = subprocess.run([self.backend_binary, '--version'], stdin=subprocess.DEVNULL,
+                                                  text=True, capture_output=True, timeout=3).stdout.strip() or 'Codex version unknown'
+        except (OSError, subprocess.TimeoutExpired):
+            self.backend_version = 'Codex version unknown'
         def migrate(data):
             pins = data.setdefault('pins', {}).setdefault(self.slot, [])
             if 'window:' + self.window_id in pins:
@@ -956,7 +987,7 @@ class Chat(Surface):
             self.button(13, end + 2, right - 4, 'Open in Codex CLI', ('cli',))
         elif self.details:
             self.message = f'{LABELS[self.slot][0]} · {Path(self.path).name} · {self.model} · {self.effort}'
-        self.text(2, left, 'Local · ' + Path(self.path).name, 2, width)
+        self.text(2, left, 'Local · ' + Path(self.path).name + ' · Hub ' + hub_config.VERSION, 2, width)
         self.divider(3, left, width)
         bottom = h - 10
         previous_keys = getattr(self, 'row_keys', [])
@@ -1004,8 +1035,8 @@ class Chat(Surface):
             self.button(bottom, left + 13, min(20, width - 32), f'Respond ({requests})', ('approval',), True)
         elif self.images:
             self.button(bottom, left + 13, min(20, width - 32), f'▧ {len(self.images)}', ('images',))
-        mode_label = {'ask': 'Ask approval', 'auto': 'Auto review', 'full': 'Full access'}[self.approval_mode]
-        self.button(bottom, left + width - 17, 17, '◇ ' + mode_label, ('approval-mode',), quiet=True)
+        mode_label = {'ask': 'Ask approval', 'auto': 'Approve for me', 'full': 'Full access'}[self.approval_mode]
+        self.button(bottom, left + width - 19, 19, '◇ ' + mode_label + ' ▾', ('approval-mode',), quiet=True)
         self.panel(bottom + 1, left, width, 5)
         self.field('prompt', bottom + 2, left + 1, width - 2, 'Message Codex…', height=3)
         model_width = min(25, max(8, width - 25))
@@ -1051,7 +1082,7 @@ class Chat(Surface):
 
     @staticmethod
     def slash_commands():
-        return {'/model': 'Choose model', '/approvals': 'Approval mode', '/compact': 'Compact context',
+        return {'/model': 'Choose model', '/approvals': 'Approval mode', '/permissions': 'Approval mode', '/compact': 'Compact context',
                 '/status': 'Context and chat details', '/new': 'New chat', '/resume': 'Open saved chat',
                 '/stop': 'Stop current turn', '/queue': 'Review queue', '/pin': 'Pin or unpin',
                 '/help': 'Available commands'}
@@ -1070,11 +1101,12 @@ class Chat(Surface):
             raise ValueError('Unsupported slash command. Use /help or open this chat in Codex CLI for CLI-specific commands.')
         self.fields['prompt'] = ''
         self.cursors['prompt'] = 0
-        actions = {'/model': 'model', '/approvals': 'approval-mode', '/compact': 'context', '/stop': 'stop', '/queue': 'queue', '/pin': 'pin'}
+        actions = {'/model': 'model', '/approvals': 'approval-mode', '/permissions': 'approval-mode', '/compact': 'context', '/stop': 'stop', '/queue': 'queue', '/pin': 'pin'}
         if command in actions:
             return actions[command]
         if command == '/status':
-            self.choice('Chat status', [(line, None) for line in self.context_lines()] + [(self.model or 'Default model', None), (str(self.path), None)])
+            self.choice('Chat status', [(line, None) for line in self.context_lines()] + [(self.model or 'Default model', None),
+                        ('Hub ' + hub_config.VERSION + ' · ' + self.backend_version, None), (self.backend_binary, None), (str(self.path), None)])
         elif command == '/new':
             new_chat(self.slot, self.path)
         elif command == '/resume':
@@ -1101,17 +1133,29 @@ class Chat(Surface):
             tmux('set-buffer', text)
         self.message = 'Copied response.'
 
-    def choice(self, title, choices):
+    def choice(self, title, choices, dropdown=False):
         original_offset = self.offset
         offset = 0
         while not self.stopping:
-            h, w = self.begin()
-            self.text(1, 3, title, bold=True)
-            available = max(1, h - 7)
+            if dropdown:
+                self.offset = original_offset
+                self.draw_chat()
+                self.hits = []
+                h, w = self.screen.getmaxyx()
+                menu_width = min(76, w - 4)
+                left, top = max(2, (w - menu_width) // 2), max(1, h - len(choices) - 15)
+                self.panel(top, left, menu_width, len(choices) + 6)
+                self.text(top + 1, left + 2, title, 8, menu_width - 4, bold=True)
+                available = len(choices)
+            else:
+                h, w = self.begin()
+                self.text(1, 3, title, bold=True)
+                available = max(1, h - 7)
             offset = min(max(0, offset), max(0, len(choices) - available))
-            for y, (label, value) in enumerate(choices[offset:offset + available], 4):
-                self.button(y, 3, w - 6, label, ('pick', value), quiet=True, align='left')
-            self.button(h - 2, 3, 12, 'Back', ('cancel',))
+            for y, (label, value) in enumerate(choices[offset:offset + available], top + 3 if dropdown else 4):
+                self.button(y, left + 2 if dropdown else 3, menu_width - 4 if dropdown else w - 6,
+                            label, ('pick', value), quiet=True, align='left')
+            self.button(top + len(choices) + 4 if dropdown else h - 2, left + 2 if dropdown else 3, 12, 'Back', ('cancel',))
             self.offset = offset
             action = self.event()
             offset = self.offset
@@ -1339,7 +1383,8 @@ class Chat(Surface):
         env['CODEX_HOME'] = str(account_home(self.slot))
         for key in AUTH_ENV:
             env.pop(key, None)
-        os.execvpe('codex', ['codex', 'resume', self.ident, '-C', self.path], env)
+        binary = hub_config.executable(ROOT)
+        os.execvpe(binary, [binary, 'resume', self.ident, '-C', self.path], env)
 
     def run(self, path, thread='', prompt=''):
         from concurrent.futures import ThreadPoolExecutor
@@ -1352,6 +1397,9 @@ class Chat(Surface):
         self.row_keys, self.visible_lines, self.max_scroll = [], 1, 0
         self.model = self.effort = None
         self.approval_mode = 'ask'
+        self.backend_binary, self.backend_version = '', ''
+        self.last_preferences = 0
+        self.busy_status = None
         self.expanded = set()
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.pending = self.executor.submit(self.bootstrap, path, thread)
@@ -1394,9 +1442,27 @@ class Chat(Surface):
                     finally:
                         self.runtime.lock.release()
                 self.save_draft()
+                if time.monotonic() - self.last_preferences > 2:
+                    self.scroll_step = hub_config.load(ROOT).get('scrollLines', 1)
+                    self.last_preferences = time.monotonic()
+                busy = bool(self.pending or self.snapshot.get('active') or self.snapshot.get('requests'))
+                if self.ready and busy != self.busy_status:
+                    tmux('set-option', '-w', '-t', self.window_id, '@hub_busy', '1' if busy else '0')
+                    self.busy_status = busy
                 self.draw_chat()
                 previous_offset = self.offset
                 action = self.event()
+                # Drain queued wheel input before repainting, so a fast gesture
+                # does not cause one full terminal redraw per wheel event.
+                if self.scroll_event and not action:
+                    self.screen.timeout(0)
+                    try:
+                        for _ in range(31):
+                            action = self.event()
+                            if action or not self.scroll_event:
+                                break
+                    finally:
+                        self.screen.timeout(150)
                 if self.offset != previous_offset:
                     self.follow = self.offset >= self.max_scroll
                 if not action:
@@ -1460,7 +1526,7 @@ class Chat(Surface):
                         if selected:
                             self.effort = selected
                     elif kind == 'approval-mode':
-                        selected = self.choice('Approval mode · takes effect on the next turn', [('Ask for approval · project sandbox, explicit approvals', 'ask'), ('Approve for me · automatic risk review, project sandbox', 'auto'), ('Full access · unrestricted files/network, no approval prompts', 'full')])
+                        selected = self.choice('Approval mode · next turn', [('Ask for approval · sandbox, explicit approvals', 'ask'), ('Approve for me · sandbox, automatic risk review', 'auto'), ('Full access · unrestricted files/network, no approvals', 'full')], dropdown=True)
                         if selected:
                             self.approval_mode = selected
                     elif kind == 'context':
@@ -1561,12 +1627,19 @@ class Settings(Surface):
                 self.button(row, 3, w - 19, account['label'] + (' · default' if ident == CONFIG['defaultAccount'] else ''), ('switch', ident), quiet=True, align='left')
                 self.button(row, w - 15, 12, 'Edit', ('edit', ident))
             self.button(h - 4, 3, 16, '+ Add account', ('add',), True)
+            self.button(h - 4, 22, max(12, w - 25), 'Scrolling: ' + str(CONFIG.get('scrollLines', 1)) + ' lines ↻', ('scrolling',))
             self.button(h - 2, 3, 12, 'Back', ('cancel',))
             self.text(h - 1, 2, self.message, 6, w - 4)
             action = self.event()
             try:
                 if action == ('cancel',):
                     return
+                if action == ('scrolling',):
+                    values = [1, 3, 6]
+                    current = CONFIG.get('scrollLines', 1)
+                    chosen = values[(values.index(current) + 1) % len(values)] if current in values else 1
+                    hub_config.preferences(ROOT, scrollLines=chosen)
+                    self.message = 'Scroll sensitivity: ' + str(chosen) + ' lines per wheel event.'
                 if action and action[0] in ('edit', 'add'):
                     selected = self.form(action[1] if action[0] == 'edit' else None)
                     reload_config()
@@ -1591,6 +1664,7 @@ class Manage(Surface):
         key = row['id'] if saved else pin_key(window)
         self.fields['name'] = state().get('names', {}).get(self.slot, {}).get(key, row['title'] if saved else window['name'])
         confirming = False
+        reloading = False
         while True:
             h, w = self.begin()
             self.text(2, 3, 'Chat options', bold=True)
@@ -1602,8 +1676,23 @@ class Manage(Surface):
             if not saved:
                 self.text(11, 3, 'Closing stops this chat. Its saved history is kept.', 2)
                 self.button(13, 3, 24, 'Confirm close' if confirming else 'Close window', ('close',))
+                if window['engine'] == 'tui':
+                    self.button(15, 3, 24, 'Confirm reload' if reloading else '↻ Reload chat', ('reload',))
+                    if reloading:
+                        self.text(17, 3, 'Reconnects this chat; drafts and history are kept. Stop any active turn first.', 2)
             self.button(h - 3, 3, 18, 'Cancel', ('cancel',))
             action = self.event()
+            if action == ('reload',):
+                if not reloading:
+                    reloading = True
+                    continue
+                try:
+                    current = next(w for w in windows() if w['id'] == window['id'])
+                    reload_chat(current, force=not current['version'])
+                    return
+                except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                    self.error(error)
+                    continue
             if action == ('cancel',):
                 return
             if action == ('pin',):
@@ -1656,8 +1745,9 @@ def account_command(args):
         hub_config.remove(options.id, ROOT)
     else:
         env = hub_config.environment(options.id, ROOT)
-        argv = ['codex'] + (['login', 'status'] if options.operation == 'status' else [] if options.operation == 'run' else [options.operation]) + options.args
-        os.execvpe('codex', argv, env)
+        binary = hub_config.executable(ROOT)
+        argv = [binary] + (['login', 'status'] if options.operation == 'status' else [] if options.operation == 'run' else [options.operation]) + options.args
+        os.execvpe(binary, argv, env)
 
 
 def main():
@@ -1675,12 +1765,28 @@ def main():
               'codex-hub cli ACCOUNT [PATH]       Stock CLI chat\n'
               'codex-hub accounts --help          Add, label, and sign into accounts\n'
               'codex-hub config                   Show private configuration path\n'
+              'codex-hub doctor                   Show hub/backend versions and path\n'
+              'codex-hub reload [ACCOUNT]        Reconnect idle enhanced chats\n'
               'codex-hub usage [ACCOUNT|all]      Read usage snapshots\n'
               'codex-hub --version')
         return
     if mode == 'config':
         hub_config.initialize(ROOT)
         print(ROOT / 'config.json')
+        return
+    if mode == 'doctor':
+        binary = hub_config.executable(ROOT)
+        print('Codex Hub ' + hub_config.VERSION + '\nBackend: ' + binary)
+        subprocess.run([binary, '--version'], check=True)
+        return
+    if mode == 'reload':
+        slot = next((arg for arg in args[1:] if not arg.startswith('--')), None)
+        if slot and slot not in LABELS:
+            raise ValueError('Unknown account.')
+        for window in windows():
+            if window['engine'] == 'tui' and (not slot or window['slot'] == slot):
+                reload_chat(window, force='--force' in args)
+                print('Reloaded ' + window['id'])
         return
     if mode == 'accounts':
         account_command(args[1:])
@@ -1696,7 +1802,8 @@ def main():
         return
     if mode == 'account-login':
         slot = args[2] if len(args) > 2 else args[1]
-        os.execvpe('codex', ['codex', 'login'], hub_config.environment(slot, ROOT))
+        binary = hub_config.executable(ROOT)
+        os.execvpe(binary, [binary, 'login'], hub_config.environment(slot, ROOT))
     if mode == 'setup':
         hub_config.initialize(ROOT)
         reload_config()
