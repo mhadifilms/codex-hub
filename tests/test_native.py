@@ -159,6 +159,8 @@ class NativeIntegration(test_hub.HubIntegration):
         self.click_text('▣')
         self.wait_for(lambda: hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_in_mode}') == '1')
         hub.tmux('send-keys', '-X', '-t', self.chat['pane'], 'cancel')
+        self.wait_for(lambda: hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_in_mode}') == '0')
+        time.sleep(.2)
         self.click_text('Message Codex')
         os.write(self.fd, b'A persistent draft')
         self.wait_for(lambda: json.loads(saved.read_text())['draft']['text'] == 'A persistent draft')

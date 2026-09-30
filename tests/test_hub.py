@@ -122,6 +122,9 @@ class HubIntegration(unittest.TestCase):
         os.write(cls.fd, f'\x1b[<0;{x};{y}M'.encode())
         time.sleep(.05)
         os.write(cls.fd, f'\x1b[<0;{x};{y}m'.encode())
+        # Give the frontend a frame to consume the release before typing or
+        # measuring another control; hosted runners can schedule it later.
+        time.sleep(.15)
         cls.pump()
 
     @classmethod
@@ -203,6 +206,8 @@ class HubIntegration(unittest.TestCase):
         self.wait_for(lambda: json.loads((self.root / '2/invoked.json').read_text())['cwd'] == str(created))
         self.assertEqual(hub.tmux('display-message', '-p', '-t', resumed['pane'], '#{pane_dead}'), '0')
         self.wait_for(lambda: self.account_window('2')['path'] == str(created))
+        self.wait_for(lambda: self.account_window('2')['pane'] and self.account_window('2')['sidebar'])
+        self.wait_for(lambda: 'Made by mouse' in self.sidebar_text('2') and 'New chat' in self.sidebar_text('2'))
         self.wait_for(lambda: 'No chats yet' not in self.sidebar_text('2'))
         newest = self.account_window('2')
         type(self).output = b''
