@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Read weekly Codex limits from each local account's app server."""
+
+import datetime as dt
+import json
+import os
+import select
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+SELF = Path(__file__).resolve()
+LIB = SELF.parent.parent / 'lib'
+sys.path.insert(0, str(LIB if (LIB / 'hub_config.py').is_file() else SELF.parent.parent / 'share/codex-hub'))
+from hub_config import AUTH_ENV, ROOT, VERSION, home as account_home, load
+
+
+def account_ids():
+    # Preserve the main alias for existing read-only monitoring integrations.
+    return ('main', *(ident for ident in load(ROOT)['accounts'] if account_home(ident) != Path.home() / '.codex'))
+
+
+def iso(timestamp):
+    if timestamp is None:
+        return None
+    return dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).isoformat()
+
+
+def read_account(account):
+    home = Path.home() / ".codex" if account == "main" else account_home(account)
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(home)
+    for key in AUTH_ENV:
+        env.pop(key, None)
+
+    process = subprocess.Popen(
+        ["codex", "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+    pending = b""
+
+    def send(message):
+        process.stdin.write((json.dumps(message) + "\n").encode())
+        process.stdin.flush()
+
+    def response(request_id):
+        nonlocal pending
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                message = json.loads(line)
+                if message.get("id") == request_id:
+                    if "error" in message:
+                        raise RuntimeError("app-server request failed")
+                    return message["result"]
+            ready, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
+                raise RuntimeError("app-server closed")
+            pending += chunk
+        raise TimeoutError("app-server timed out")
+
+    try:
+        send({
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "codex-hub-usage", "title": "Codex Hub Usage", "version": VERSION}},
+        })
+        response(1)
+        send({"method": "initialized", "params": {}})
+        send({"id": 2, "method": "account/rateLimits/read"})
+        result = response(2)
+        observed_at = iso(time.time())
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    limit = result.get("rateLimitsByLimitId", {}).get("codex") or result.get("rateLimits") or {}
+    weekly = next(
+        (window for window in (limit.get("primary"), limit.get("secondary"))
+         if window and window.get("windowDurationMins") == 10080),
+        None,
+    )
+    if weekly is None:
+        raise ValueError("weekly limit unavailable")
+    credits = result.get("rateLimitResetCredits") or {}
+    expiries = [
+        credit["expiresAt"] for credit in credits.get("credits", [])
+        if credit.get("status") == "available" and credit.get("expiresAt") is not None
+    ]
+    used = weekly.get("usedPercent")
+    # An unused weekly window can report a moving now-plus-seven-days reset.
+    reset_is_anchored = used is not None and used > 0
+    return {
+        "observedAt": observed_at,
+        "usedPercent": used,
+        "remainingPercent": None if used is None else max(0, min(100, 100 - used)),
+        "weeklyResetsAt": iso(weekly.get("resetsAt")) if reset_is_anchored else None,
+        "weeklyResetIsAnchored": reset_is_anchored,
+        "bankedResetCredits": credits.get("availableCount"),
+        "earliestCreditExpiry": iso(min(expiries)) if expiries else None,
+    }
+
+
+def main():
+    requested = sys.argv[1:] or ["all"]
+    available = (*load(ROOT)["accounts"], "main", "all")
+    if len(requested) != 1 or requested[0] not in available:
+        print("Usage: codex-hub-usage [ACCOUNT|main|all]", file=sys.stderr)
+        return 2
+    accounts = account_ids() if requested[0] == "all" else (requested[0],)
+    output = {}
+    for account in accounts:
+        try:
+            output[account] = read_account(account)
+        except (OSError, RuntimeError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+            output[account] = {"error": type(error).__name__}
+    print(json.dumps({"accounts": output}, sort_keys=True))
+    return 1 if any("error" in item for item in output.values()) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

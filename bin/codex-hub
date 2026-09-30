@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+python="${CODEX_HUB_PYTHON:-$bin_dir/../share/codex-hub/venv/bin/python}"
+[ -x "$python" ] || python=python3
+exec "$python" "$bin_dir/codex-hub-tui" "$@"

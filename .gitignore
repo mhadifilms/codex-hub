@@ -1,0 +1,14 @@
+.DS_Store
+.env*
+auth.json
+*.sock
+*.pem
+*.key
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+demo-frames/
+*.mp4
