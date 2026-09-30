@@ -50,28 +50,6 @@ class HubIntegration(unittest.TestCase):
         os.environ['OPENAI_API_KEY'] = 'test-key-must-not-reach-codex'
         os.environ['TERM'] = 'xterm-256color'
         os.environ.pop('TMUX', None)
-        diagnostic = cls.root / 'diagnostic'
-        diagnostic.mkdir()
-        (diagnostic / 'sitecustomize.py').write_text(
-            'import sys,os,curses\nfrom pathlib import Path\n'
-            'if len(sys.argv)>1 and sys.argv[1]=="manage":\n'
-            ' original=curses.getmouse\n'
-            ' def observed():\n'
-            '  value=original()\n'
-            '  with (Path(os.environ["CODEX_HUB_ROOT"])/"mouse.log").open("a") as log: log.write(repr(value)+"\\n")\n'
-            '  return value\n'
-            ' curses.getmouse=observed\n'
-            ' wrapper=curses.wrapper\n'
-            ' class Screen:\n'
-            '  def __init__(self,screen): self.screen=screen\n'
-            '  def __getattr__(self,name): return getattr(self.screen,name)\n'
-            '  def get_wch(self):\n'
-            '   value=self.screen.get_wch()\n'
-            '   surface=sys._getframe(1).f_locals.get("self")\n'
-            '   with (Path(os.environ["CODEX_HUB_ROOT"])/"mouse.log").open("a") as log: log.write("key "+repr(value)+" pid "+str(os.getpid())+" edit "+repr(surface.edit)+" hits "+repr(surface.hits)+"\\n")\n'
-            '   return value\n'
-            ' curses.wrapper=lambda fn: wrapper(lambda screen: fn(Screen(screen)))\n')
-        os.environ['PYTHONPATH'] = str(diagnostic)
         config = {'schemaVersion': 1, 'defaultAccount': '1', 'accounts': {slot: {'label': label, 'description': 'Demo workspace', 'home': str(cls.root / slot), 'session': 'codex-sub-' + slot} for slot, label in getattr(cls, 'FIXTURE_LABELS', [('1', 'One'), ('2', 'Two'), ('3', 'Three')])}}
         (cls.root / 'config.json').write_text(json.dumps(config))
         hub.reload_config()
@@ -142,6 +120,10 @@ class HubIntegration(unittest.TestCase):
     @classmethod
     def click(cls, x, y):
         # SGR mouse coordinates are one-based terminal coordinates.
+        # A real pointer moves between controls. Reset tmux's held-button state
+        # before pressing; older popup implementations otherwise send a drag.
+        os.write(cls.fd, f'\x1b[<35;{x};{y}M'.encode())
+        time.sleep(.05)
         os.write(cls.fd, f'\x1b[<0;{x};{y}M'.encode())
         time.sleep(.05)
         os.write(cls.fd, f'\x1b[<0;{x};{y}m'.encode())
@@ -221,7 +203,6 @@ class HubIntegration(unittest.TestCase):
             last = positions[-1]
             prefix = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\([AB0]', '', output[last.end():title])
             row, column = map(int, last.groups())
-            print('Popup target:', row, column, repr(prefix), x, y)
             self.click(x + column + len(prefix) - 3, y + row - 2)
         popup_click(6, 6)
         os.write(self.fd, str(self.project).encode())
@@ -258,14 +239,7 @@ class HubIntegration(unittest.TestCase):
         os.write(self.fd, b'\x15Renamed by mouse')
         time.sleep(.25)
         chat_popup_click(10, 8)
-        try:
-            self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
-        except AssertionError:
-            print('Rename target:', newest['id'], [(w['id'], w['name']) for w in hub.windows()])
-            print('Popup input tail:', repr(type(self).output[-1800:]))
-            print('Popup mouse events:', (self.root / 'mouse.log').read_text() if (self.root / 'mouse.log').exists() else 'none')
-            print('Popup initial output:', repr(type(self).output[:2400]))
-            raise
+        self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
         self.wait_for(lambda: 'Renamed by mouse' in self.sidebar_text('2'))
         type(self).output = b''
         chat_menu('Renamed by mouse')
