@@ -67,7 +67,8 @@ class HubIntegration(unittest.TestCase):
             '  def __getattr__(self,name): return getattr(self.screen,name)\n'
             '  def get_wch(self):\n'
             '   value=self.screen.get_wch()\n'
-            '   with (Path(os.environ["CODEX_HUB_ROOT"])/"mouse.log").open("a") as log: log.write("key "+repr(value)+"\\n")\n'
+            '   surface=sys._getframe(1).f_locals.get("self")\n'
+            '   with (Path(os.environ["CODEX_HUB_ROOT"])/"mouse.log").open("a") as log: log.write("key "+repr(value)+" pid "+str(os.getpid())+" edit "+repr(surface.edit)+" hits "+repr(surface.hits)+"\\n")\n'
             '   return value\n'
             ' curses.wrapper=lambda fn: wrapper(lambda screen: fn(Screen(screen)))\n')
         os.environ['PYTHONPATH'] = str(diagnostic)
