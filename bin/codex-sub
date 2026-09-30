@@ -1,0 +1,13 @@
+#!/bin/sh
+# Compatibility alias; new installations use codex-hub accounts.
+set -eu
+[ "$#" -gt 0 ] || { echo 'Usage: codex-sub ACCOUNT [attach|login|logout|status|run] [args...]' >&2; exit 2; }
+account="$1"
+shift
+action="${1:-attach}"
+[ "$#" -eq 0 ] || shift
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$action" = attach ]; then
+  exec "$bin_dir/codex-hub" "$account" "$@"
+fi
+exec "$bin_dir/codex-hub" accounts "$action" "$account" "$@"

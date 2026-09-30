@@ -1,0 +1,1733 @@
+#!/usr/bin/env python3
+"""Mouse-first workspace around Codex's real terminal, on an isolated tmux server."""
+import curses
+from contextlib import closing
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import shlex
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+
+SELF = Path(__file__).resolve()
+LIB = SELF.parent.parent / 'lib'
+sys.path.insert(0, str(LIB if (LIB / 'hub_config.py').is_file() else SELF.parent.parent / 'share/codex-hub'))
+import hub_config
+ROOT = hub_config.ROOT
+SOCKET = ROOT / 'tmux.sock'
+AUTH_ENV = hub_config.AUTH_ENV
+
+
+def reload_config():
+    global CONFIG, LABELS
+    CONFIG = hub_config.load(ROOT)
+    LABELS = {ident: (account['label'], account.get('description', 'Local workspace'))
+              for ident, account in CONFIG['accounts'].items()}
+
+
+def account_home(slot):
+    return hub_config.home(slot, ROOT)
+
+
+def account_session(slot):
+    return hub_config.session(slot, ROOT)
+
+
+reload_config()
+
+
+def tmux(*args, check=True):
+    # tmux treats a trailing semicolon as a command separator even in argv.
+    literal_args = [str(arg)[:-1] + r'\;' if str(arg).endswith(';') else str(arg) for arg in args]
+    return subprocess.run(['tmux', '-S', str(SOCKET), *literal_args],
+                          text=True, capture_output=True, check=check).stdout.strip()
+
+
+def command(*args):
+    return shlex.join([str(SELF), *map(str, args)])
+
+
+def state():
+    try:
+        data = json.loads((ROOT / 'hub-state.json').read_text())
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError):
+        pass
+    try:
+        projects = json.loads((ROOT / 'projects.json').read_text())
+    except (OSError, ValueError):
+        projects = []
+    return {'projects': projects if isinstance(projects, list) else []}
+
+
+def update_state(change):
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (ROOT / 'hub-state.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = state()
+        change(data)
+        with tempfile.NamedTemporaryFile('w', dir=ROOT, delete=False) as output:
+            json.dump(data, output)
+            temporary = Path(output.name)
+        temporary.chmod(0o600)
+        temporary.replace(ROOT / 'hub-state.json')
+
+
+def remember(slot, path):
+    path = str(Path(path).expanduser().resolve())
+    def change(data):
+        projects = data.setdefault('projects', [])
+        if path not in projects:
+            projects.append(path)
+        data.setdefault('selected', {})[slot] = path
+        collapsed = data.setdefault('collapsed', {}).setdefault(slot, [])
+        if path in collapsed:
+            collapsed.remove(path)
+    update_state(change)
+
+
+def pin_key(window):
+    return window.get('thread') or 'window:' + window['id']
+
+
+def toggle_pin(slot, key):
+    def change(data):
+        pins = data.setdefault('pins', {}).setdefault(slot, [])
+        pins.remove(key) if key in pins else pins.append(key)
+    update_state(change)
+
+
+def windows():
+    keys = ('id', 'session', 'name', 'pane', 'path', 'kind', 'thread', 'sidebar')
+    fmt = '\t'.join(('#{window_id}', '#{session_name}', '#{window_name}',
+                     '#{@hub_main}', '#{@hub_project}', '#{@hub_kind}',
+                     '#{@hub_thread}', '#{@hub_sidebar}'))
+    rows = []
+    for line in tmux('list-windows', '-a', '-F', fmt).splitlines():
+        fields = line.split('\t')
+        fields += [''] * (len(keys) - len(fields))
+        row = dict(zip(keys, fields))
+        sessions = {account_session(slot): slot for slot in LABELS}
+        if row['session'] in sessions:
+            row['slot'] = sessions[row['session']]
+            rows.append(row)
+    return rows
+
+
+def history(slot):
+    # Read metadata only. Authentication and conversation contents never leave CODEX_HOME.
+    databases = list(account_home(slot).glob('state_*.sqlite'))
+    if not databases:
+        return [{**record, 'id': ident, 'title': record.get('title', 'New chat'), 'updated_at': record.get('updated_at', 0)}
+                for ident, record in state().get('chats', {}).get(slot, {}).items()], ''
+    database = max(databases, key=lambda p: int(p.stem.split('_')[-1]))
+    try:
+        with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=.2)) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute('SELECT id, title, cwd, updated_at FROM threads WHERE archived = 0 '
+                              'AND has_user_event = 1 ORDER BY updated_at DESC').fetchall()
+        rows = [{**dict(row), 'cwd': str(Path(row['cwd']).resolve())} for row in rows]
+        existing = {row['id'] for row in rows}
+        rows += [{**record, 'id': ident, 'title': record.get('title', 'New chat'), 'updated_at': record.get('updated_at', 0)}
+                 for ident, record in state().get('chats', {}).get(slot, {}).items() if ident not in existing]
+        return rows, ''
+    except sqlite3.Error:
+        return [], 'Saved chats temporarily unavailable'
+
+
+def repositories():
+    result = []
+    base = Path.home() / 'Documents/GitHub'
+    if base.is_dir():
+        for owner in sorted(base.iterdir()):
+            if not owner.is_dir():
+                continue
+            if (owner / '.git').exists():
+                result.append(owner)
+            else:
+                try:
+                    result.extend(p for p in sorted(owner.iterdir()) if (p / '.git').exists())
+                except OSError:
+                    pass
+    return list(dict.fromkeys([Path(p) for p in state().get('projects', [])] + result))
+
+
+def attach_sidebar(window, reload=False):
+    panes = tmux('list-panes', '-t', window['id'], '-F', '#{pane_id}').splitlines()
+    main = window['pane'] if window['pane'] in panes else panes[0]
+    tmux('set-option', '-w', '-t', window['id'], '@hub_main', main)
+    if window['sidebar'] in panes:
+        if reload:
+            tmux('respawn-pane', '-k', '-t', window['sidebar'], command('sidebar', window['slot']))
+        return
+    width = int(tmux('display-message', '-p', '-t', main, '#{pane_width}'))
+    sidebar = tmux('split-window', '-h', '-b', '-d', '-l', str(min(36, max(24, width // 3))),
+                   '-t', main, '-P', '-F', '#{pane_id}', command('sidebar', window['slot']))
+    tmux('set-option', '-w', '-t', window['id'], '@hub_sidebar', sidebar)
+    tmux('select-pane', '-t', main)
+
+
+def setup(reload=False):
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config = ROOT / 'tmux.conf'
+    for slot in LABELS:
+        session = account_session(slot)
+        if subprocess.run(
+                ['tmux', '-S', str(SOCKET), 'has-session', '-t', session],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            tmux('-f', config, 'new-session', '-d', '-s', session, '-n', 'Home',
+                 '-e', f'CODEX_HOME={account_home(slot)}', '-e', f'CODEX_HUB_ROOT={ROOT}', command('welcome', slot))
+            tmux('set-option', '-w', '-t', session + ':', '@hub_kind', 'home')
+        # Keep normal terminal windows in this account's environment too.
+        tmux('set-environment', '-t', session, 'CODEX_HOME', account_home(slot))
+        tmux('set-environment', '-t', session, 'CODEX_HUB_ROOT', ROOT)
+        tmux('set-option', '-t', session, '@hub_label', LABELS[slot][0])
+        for key in AUTH_ENV:
+            tmux('set-environment', '-u', '-t', session, key)
+    for slot in LABELS:
+        account = [w for w in windows() if w['slot'] == slot]
+        if not any(w['kind'] == 'home' for w in account):
+            home = tmux('new-window', '-d', '-t', account_session(slot) + ':', '-n', 'Home',
+                        '-P', '-F', '#{window_id}', command('welcome', slot))
+            tmux('set-option', '-w', '-t', home, '@hub_kind', 'home')
+            if all(w['name'] == 'shell' for w in account):
+                tmux('select-window', '-t', home)
+    for window in windows():
+        attach_sidebar(window, reload)
+        if reload and window['kind'] == 'home':
+            main = tmux('show-option', '-wv', '-t', window['id'], '@hub_main')
+            tmux('respawn-pane', '-k', '-t', main, command('welcome', window['slot']))
+
+
+def restore_chats():
+    saved = state()
+    records = saved.get('chats', {})
+    selected = saved.get('selected', {}).copy()
+    for slot in LABELS:
+        for ident, record in records.get(slot, {}).items():
+            if record.get('open') and Path(record['cwd']).is_dir():
+                new_chat(slot, record['cwd'], record.get('title', 'New chat'), thread=ident, background=True)
+        active = next((w for w in windows() if w['slot'] == slot and w.get('thread') == saved.get('active', {}).get(slot)), None)
+        if active:
+            tmux('select-window', '-t', active['id'])
+            tmux('select-pane', '-t', active['pane'])
+    update_state(lambda data: data.setdefault('selected', {}).update(selected))
+
+
+def focus(window):
+    if window.get('thread'):
+        update_state(lambda data: data.setdefault('active', {}).update({window['slot']: window['thread']}))
+    target = window['pane'] or window['id']
+    tmux('select-window', '-t', window['id'])
+    if window['pane']:
+        tmux('select-pane', '-t', window['pane'])
+    if os.environ.get('TMUX', '').split(',')[0] == str(SOCKET):
+        tmux('switch-client', '-t', target)
+    elif sys.stdin.isatty():
+        subprocess.run(['tmux', '-S', str(SOCKET), 'attach-session', '-t', target], check=True)
+
+
+def new_chat(slot, path, title='New chat', thread=None, resume_picker=False, prompt=None, legacy=False, background=False):
+    path = Path(path).expanduser().resolve()
+    if not path.is_dir():
+        raise ValueError(f'Project folder is unavailable: {path}')
+    if thread:
+        existing = next((w for w in windows() if w['slot'] == slot and w['thread'] == thread), None)
+        if existing:
+            if not background:
+                focus(existing)
+            return
+    native = not (legacy or resume_picker or os.environ.get('CODEX_HUB_CHAT') == 'cli')
+    args = [str(SELF), 'chat', slot, str(path), thread or ''] if native else ['codex']
+    if not native and (thread or resume_picker):
+        args += ['resume', thread or '--all']
+    if not native:
+        args += ['-C', str(path)]
+    if prompt:
+        args += [prompt] if native else ['--', prompt]
+    env = ['env', *(f'-u{key}' for key in AUTH_ENV), f'CODEX_HOME={account_home(slot)}', f'CODEX_HUB_ROOT={ROOT}']
+    wid = tmux('new-window', '-d', '-t', account_session(slot) + ':', '-c', path,
+               '-n', title, '-P', '-F', '#{window_id}', shlex.join(env + args))
+    for key, value in {'@hub_project': str(path), '@hub_kind': 'chat',
+                       '@hub_thread': thread or '', '@hub_engine': 'tui' if native else 'cli'}.items():
+        tmux('set-option', '-w', '-t', wid, key, value)
+    tmux('set-option', '-w', '-t', wid, 'remain-on-exit', 'on')
+    window = next(w for w in windows() if w['id'] == wid)
+    attach_sidebar(window)
+    remember(slot, path)
+    if not background:
+        focus(next(w for w in windows() if w['id'] == wid))
+
+
+class Surface:
+    def __init__(self, screen, slot):
+        self.screen, self.slot = screen, slot
+        self.hits, self.fields = [], {}
+        self.edit = None
+        self.pressed = None
+        self.offset = 0
+        self.message = ''
+        self.hover = None
+        self.cursors = {}
+        self.palette = {}
+        self.scroll_step = CONFIG.get('scrollLines', 1) if type(self).__name__ == 'Chat' else 3
+        screen.keypad(True)
+        screen.timeout(600)
+        curses.curs_set(0)
+        curses.mouseinterval(0)
+        curses.mousemask(curses.ALL_MOUSE_EVENTS | getattr(curses, 'REPORT_MOUSE_POSITION', 0))
+        if curses.has_colors():
+            curses.start_color()
+            # Grayscale surfaces follow the app hierarchy: darker navigation,
+            # charcoal workspace, soft selection, white primary action.
+            background = 234 if isinstance(self, Sidebar) else 233
+            for n, fg, bg in [(1, 253, background), (2, 245, background),
+                              (3, 232, 255), (4, 255, 236),
+                              (5, 249, background), (6, 210, background),
+                              (7, 255, 235), (8, 255, 235), (9, 240, background), (10, 239, 235)]:
+                curses.init_pair(n, fg if curses.COLORS >= 256 else (0 if n in (3, 4) else 7),
+                                 bg if curses.COLORS >= 256 else (7 if n in (3, 4) else 0))
+            screen.bkgd(' ', curses.color_pair(1))
+
+    @staticmethod
+    def shorten(value, width):
+        return value if len(value) <= width else value[:max(0, width - 1)] + '…'
+
+    def divider(self, y, x, width):
+        self.text(y, x, '─' * max(0, width), 9, width)
+
+    def panel(self, y, x, width, height):
+        self.text(y, x, '╭' + '─' * max(0, width - 2) + '╮', 10, width)
+        for row in range(y + 1, y + height - 1):
+            self.text(row, x, '│' + ' ' * max(0, width - 2) + '│', 10, width)
+        self.text(y + height - 1, x, '╰' + '─' * max(0, width - 2) + '╯', 10, width)
+
+    def text(self, y, x, text, color=1, width=None, bold=False):
+        h, w = self.screen.getmaxyx()
+        if not (0 <= y < h and 0 <= x < w - 1):
+            return
+        width = min(width if width is not None else w - x - 1, w - x - 1)
+        clean = ''.join(c if c.isprintable() else ' ' for c in str(text))
+        try:
+            self.screen.addnstr(y, x, clean, max(0, width),
+                                curses.color_pair(color) | (curses.A_BOLD if bold else 0))
+        except curses.error:
+            pass
+
+    def button(self, y, x, width, label, action, accent=False, height=1,
+               quiet=False, selected=False, align='center'):
+        color = 3 if accent else 4 if selected or self.hover == action else 1 if quiet else 7
+        for row in range(y, y + height):
+            self.text(row, x, ' ' * width, color, width)
+        label = self.shorten(label, width)
+        label = label.ljust(width) if align == 'left' else label.center(width)
+        self.text(y + height // 2, x, label, color, width)
+        self.hits.append((y, x, height, width, action))
+
+    def field(self, name, y, x, width, placeholder, height=1):
+        value = self.fields.get(name, '')
+        color = 8 if self.edit == name else 7
+        for row in range(height):
+            self.text(y + row, x, ' ' * width, color, width)
+        inner = max(1, width - 2)
+        position = min(self.cursors.get(name, len(value)), len(value))
+        lines, line, caret = [], '', (0, 0)
+        for index, char in enumerate(value):
+            if index == position:
+                caret = (len(lines), len(line))
+            if char == '\n' or len(line) == inner:
+                lines.append(line)
+                line = ''
+            if char != '\n':
+                line += char
+        lines.append(line)
+        if position == len(value):
+            caret = (len(lines) - 1, len(line))
+        start = max(0, caret[0] - height + 1) if self.edit == name else max(0, len(lines) - height)
+        if not value:
+            lines = [placeholder]
+        for offset, line in enumerate(lines[start:start + height]):
+            self.text(y + offset, x + 1, line, color, width - 2)
+        if self.edit == name:
+            offset = max(0, min(height - 1, caret[0] - start))
+            cursor_x = x if not value else x + min(width - 2, 1 + caret[1])
+            char = value[position] if position < len(value) and value[position] != '\n' else ' '
+            try:
+                self.screen.addstr(y + offset, cursor_x, char, curses.color_pair(color) | curses.A_REVERSE)
+            except curses.error:
+                pass
+        self.hits.append((y, x, height, width, ('field', name)))
+
+    def begin(self):
+        self.screen.erase()
+        self.hits = []
+        return self.screen.getmaxyx()
+
+    def event(self):
+        self.screen.refresh()
+        try:
+            key = self.screen.get_wch()
+        except curses.error:
+            return None
+        if key == curses.KEY_MOUSE:
+            try:
+                _, x, y, _, button = curses.getmouse()
+            except curses.error:
+                return None
+            if button & curses.BUTTON4_PRESSED:
+                self.offset = max(0, self.offset - self.scroll_step)
+            elif button & getattr(curses, 'BUTTON5_PRESSED', 0):
+                self.offset += self.scroll_step
+            else:
+                hit = next((action for top, left, height, width, action in reversed(self.hits)
+                            if top <= y < top + height and left <= x < left + width), None)
+                self.hover = hit
+                track = self.pressed if self.pressed and self.pressed[0] == 'scroll-track' else hit if hit and hit[0] == 'scroll-track' else None
+                if track and (button & (curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED) or self.pressed and self.pressed[0] == 'scroll-track' and button & getattr(curses, 'REPORT_MOUSE_POSITION', 0)):
+                    if button & curses.BUTTON1_PRESSED:
+                        self.pressed = track
+                    elif button & curses.BUTTON1_RELEASED:
+                        self.pressed = None
+                    return ('scroll-to', min(1, max(0, (y - track[1]) / max(1, track[2] - 1))))
+                if button & curses.BUTTON1_PRESSED:
+                    self.pressed = hit
+                clicked = button & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED)
+                if button & curses.BUTTON1_RELEASED:
+                    clicked = hit is not None and hit == self.pressed
+                    self.pressed = None
+                if clicked and hit:
+                    if hit[0] == 'field':
+                        self.edit = hit[1]
+                        self.cursors[self.edit] = len(self.fields.get(self.edit, ''))
+                    else:
+                        self.edit = None
+                        return hit
+            return None
+        if key == curses.KEY_RESIZE:
+            return ('resize',)
+        if key == curses.KEY_PPAGE:
+            return ('page', -1)
+        if key == curses.KEY_NPAGE:
+            return ('page', 1)
+        if self.edit:
+            value = self.fields.get(self.edit, '')
+            position = min(self.cursors.get(self.edit, len(value)), len(value))
+            if key in (curses.KEY_BACKSPACE, '\x7f', '\b'):
+                self.fields[self.edit] = value[:max(0, position - 1)] + value[position:]
+                position = max(0, position - 1)
+            elif key == curses.KEY_DC:
+                self.fields[self.edit] = value[:position] + value[position + 1:]
+            elif key == curses.KEY_LEFT:
+                position = max(0, position - 1)
+            elif key == curses.KEY_RIGHT:
+                position = min(len(value), position + 1)
+            elif key == curses.KEY_HOME:
+                position = 0
+            elif key == curses.KEY_END:
+                position = len(value)
+            elif key == '\x15':
+                self.fields[self.edit] = ''
+                position = 0
+            elif key in ('\n', '\r') and self.edit == 'prompt':
+                self.fields['prompt'] = value[:position] + '\n' + value[position:]
+                position += 1
+            elif key in ('\n', '\r', '\x1b'):
+                self.edit = None
+            elif isinstance(key, str) and key.isprintable():
+                self.fields[self.edit] = value[:position] + key + value[position:]
+                position += len(key)
+            if self.edit:
+                self.cursors[self.edit] = position
+        elif key == '\x1b':
+            return ('cancel',)
+        elif key == curses.KEY_DOWN:
+            self.offset += 1
+        elif key == curses.KEY_UP:
+            self.offset = max(0, self.offset - 1)
+        return None
+
+    def popup(self, mode, *args):
+        tmux('display-popup', '-E', '-x', 'C', '-y', 'C', '-w', '85%', '-h', '85%',
+             '-s', 'bg=colour234,fg=colour253', '-S', 'fg=colour238',
+             '-t', os.environ['TMUX_PANE'], '-T', ' Codex ', command(mode, self.slot, *args))
+
+    def error(self, error):
+        self.message = (error.stderr.strip().splitlines()[-1] if isinstance(error, subprocess.CalledProcessError)
+                        and error.stderr else str(error))
+
+
+class Sidebar(Surface):
+    def fit(self):
+        pane = os.environ['TMUX_PANE']
+        width, current = map(int, tmux('display-message', '-p', '-t', pane, '#{window_width} #{pane_width}').split())
+        hidden = tmux('show-option', '-wv', '-t', pane, '@hub_sidebar_hidden', check=False) == '1'
+        desired = 1 if hidden else min(36, max(22, width // 3))
+        if current != desired:
+            tmux('resize-pane', '-t', pane, '-x', desired)
+
+    def refresh(self):
+        reload_config()
+        self.data = state()
+        self.live = [w for w in windows() if w['slot'] == self.slot]
+        self.saved, self.history_error = history(self.slot)
+        self.pins = self.data.get('pins', {}).get(self.slot, [])
+        names = self.data.get('names', {}).get(self.slot, {})
+        for row in self.saved:
+            row['title'] = names.get(row['id'], row['title'])
+        self.selected = self.data.get('selected', {}).get(self.slot)
+        self.collapsed = self.data.get('collapsed', {}).get(self.slot, [])
+        self.projects = list(dict.fromkeys([*self.data.get('projects', []),
+                            *(w['path'] for w in self.live if w['path']),
+                            *(r['cwd'] for r in self.saved)]))
+        self.current = next((w['id'] for w in self.live if w['sidebar'] == os.environ.get('TMUX_PANE')), '')
+
+    def rows(self):
+        rows = []
+        query = self.fields.get('search', '').lower()
+        pinned_live = [w for w in self.live if pin_key(w) in self.pins and (not query or query in w['name'].lower())]
+        pinned_saved = [r for r in self.saved if r['id'] in self.pins and r['id'] not in {w['thread'] for w in self.live}
+                        and (not query or query in r['title'].lower())]
+        if pinned_live or pinned_saved:
+            rows.append(('label', 'Pinned', None))
+            rows += [('live', w['name'], w) for w in pinned_live]
+            rows += [('saved', r['title'], r) for r in pinned_saved]
+            rows.append(('label', 'Projects', None))
+        for path in self.projects:
+            live = [w for w in self.live if w['path'] == path and w['kind'] == 'chat']
+            saved = [r for r in self.saved if r['cwd'] == path and r['id'] not in {w['thread'] for w in live}]
+            matches = query in path.lower()
+            if query and not matches:
+                live = [w for w in live if query in w['name'].lower()]
+                saved = [r for r in saved if query in r['title'].lower()]
+                if not live and not saved:
+                    continue
+            rows.append(('folder', path, None))
+            if path not in self.collapsed or query:
+                rows += [('live', w['name'], w) for w in live if pin_key(w) not in self.pins]
+                rows += [('saved', r['title'] or 'Untitled chat', r) for r in saved if r['id'] not in self.pins]
+                if not live and not saved:
+                    rows.append(('empty', 'No chats yet', None))
+        terminals = [w for w in self.live if w['kind'] not in ('home', 'chat')]
+        if terminals and not query:
+            rows.append(('label', 'Terminals', None))
+            rows += [('live', w['name'], w) for w in terminals]
+        return rows
+
+    def draw(self):
+        h, w = self.begin()
+        if w < 6:
+            return
+        self.text(1, 2, 'Codex', bold=True)
+        self.button(1, w - 8, 6, 'Home', ('home',), quiet=True)
+        if len(LABELS) <= 3:
+            size = max(5, (w - 4) // len(LABELS))
+            for i, (slot, (label, _)) in enumerate(LABELS.items()):
+                self.button(3, 2 + i * size, size - 1, label, ('account', slot), selected=slot == self.slot)
+        else:
+            self.button(3, 2, w - 4, LABELS[self.slot][0] + ' ▾', ('choose-account',), quiet=True)
+        self.button(6, 2, w - 4, '+  New chat', ('new',), quiet=True, align='left')
+        self.field('search', 8, 2, w - 4, 'Search chats')
+        if self.fields.get('search'):
+            self.button(8, w - 5, 3, '×', ('clear-search',), quiet=True)
+        self.text(10, 2, 'Chats' if self.pins else 'Projects', 2)
+        self.button(10, w - 15, 13, '+ Add project', ('project',), quiet=True)
+        rows = self.rows()
+        available = max(1, h - 18)
+        self.offset = min(self.offset, max(0, len(rows) - available))
+        for y, (kind, label, row) in enumerate(rows[self.offset:self.offset + available], 12):
+            if kind == 'folder':
+                arrow = '▸' if label in self.collapsed else '▾'
+                action = ('folder', label)
+                color = 4 if self.hover == action else 1
+                self.text(y, 1, ' ' * (w - 2), color)
+                self.text(y, 2, arrow + ' ' + self.shorten(Path(label).name, w - 9), color, w - 7,
+                          label == self.selected)
+                self.hits.append((y, 1, 1, w - 6, action))
+                self.button(y, w - 5, 3, '+', ('new', label), quiet=True)
+            elif kind in ('live', 'saved'):
+                active = kind == 'live' and row['id'] == self.current
+                action = (kind, row)
+                color = 4 if active or self.hover == action else 1
+                self.text(y, 2, ' ' * (w - 4), color, w - 4)
+                self.text(y, 3, '·' if kind == 'live' else ' ', color)
+                self.text(y, 5, self.shorten(label, w - 11), color, w - 11)
+                self.hits.append((y, 2, 1, w - 7, action))
+                if kind == 'live':
+                    self.button(y, w - 5, 3, '···', ('manage', row['id']), quiet=True, selected=active)
+                else:
+                    self.button(y, w - 5, 3, '···', ('manage', 'thread:' + row['id']), quiet=True)
+            else:
+                self.text(y, 5 if kind == 'empty' else 2, label, 2, w - 6)
+        if not rows:
+            self.text(12, 2, 'No matching chats' if self.fields.get('search') else 'Your projects live here.', 2, w - 4)
+        self.text(h - 6, 2, self.message or self.history_error, 6, w - 4)
+        self.divider(h - 5, 2, w - 4)
+        self.button(h - 4, 2, w - 4, LABELS[self.slot][0] + ' · Settings', ('settings',), quiet=True, align='left')
+        self.text(h - 3, 2, self.shorten(LABELS[self.slot][1], w - 4), 2, w - 4)
+        self.text(h - 2, 2, 'Local', 2)
+        self.button(h - 2, w // 2 + 1, w // 2 - 3, 'Detach', ('detach',), quiet=True)
+
+    def run(self):
+        self.fit()
+        self.refresh()
+        refreshed = time.monotonic()
+        while True:
+            if time.monotonic() - refreshed > 2:
+                self.refresh()
+                refreshed = time.monotonic()
+            self.draw()
+            action = self.event()
+            if not action:
+                continue
+            try:
+                kind = action[0]
+                self.message = ''
+                if kind == 'resize':
+                    self.fit()
+                elif kind == 'account':
+                    tmux('switch-client', '-t', account_session(action[1]))
+                elif kind in ('settings', 'choose-account'):
+                    self.popup('settings')
+                elif kind == 'clear-search':
+                    self.fields['search'] = ''
+                    self.offset = 0
+                elif kind == 'folder':
+                    path = action[1]
+                    def toggle(data):
+                        data.setdefault('selected', {})[self.slot] = path
+                        collapsed = data.setdefault('collapsed', {}).setdefault(self.slot, [])
+                        collapsed.remove(path) if path in collapsed else collapsed.append(path)
+                    update_state(toggle)
+                elif kind == 'new':
+                    path = action[1] if len(action) > 1 else self.selected
+                    if path:
+                        new_chat(self.slot, path)
+                    else:
+                        self.popup('picker', 'new')
+                elif kind == 'project':
+                    self.popup('picker', 'project')
+                elif kind == 'live':
+                    focus(action[1])
+                elif kind == 'saved':
+                    row = action[1]
+                    new_chat(self.slot, row['cwd'], row['title'], row['id'])
+                elif kind == 'manage':
+                    self.popup('manage', action[1])
+                elif kind == 'home':
+                    focus(next(w for w in self.live if w['kind'] == 'home'))
+                elif kind == 'detach':
+                    tmux('detach-client')
+                self.refresh()
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                self.error(error)
+
+
+class Picker(Surface):
+    def run(self, purpose):
+        self.paths = repositories()
+        self.folder = Path.home()
+        self.tab = 'projects'
+        self.chosen = None
+        self.creating = False
+        while True:
+            h, w = self.begin()
+            self.text(1, 3, 'New chat' if purpose == 'new' else 'Add project', bold=True)
+            self.text(2, 3, LABELS[self.slot][1], 2)
+            self.button(4, 3, 18, 'Your projects', ('tab', 'projects'), selected=self.tab == 'projects')
+            self.button(4, 23, 20, 'Browse folders', ('tab', 'browse'), selected=self.tab == 'browse')
+            self.field('path', 6, 3, w - 16, 'Paste a folder path')
+            self.button(6, w - 11, 8, 'Go', ('go',))
+            if self.tab == 'browse':
+                self.text(8, 3, str(self.folder), 2, w - 28)
+                self.button(8, w - 24, 8, 'Up', ('up',))
+                self.button(8, w - 14, 11, 'New folder', ('create',))
+                try:
+                    paths = sorted(p for p in self.folder.iterdir() if p.is_dir() and not p.name.startswith('.'))
+                except OSError as error:
+                    paths = []
+                    self.message = str(error)
+            else:
+                paths = self.paths
+                self.text(8, 3, 'Choose a project, or browse to any folder.', 2)
+            available = max(1, h - 16)
+            self.offset = min(self.offset, max(0, len(paths) - available))
+            for y, path in enumerate(paths[self.offset:self.offset + available], 10):
+                label = ('▸  ' + path.name) if self.tab == 'browse' else path.name + '  ·  ' + str(path.parent)
+                self.text(y, 3, self.shorten(label, w - 6).ljust(w - 6), 4 if path == self.chosen else 1, w - 6)
+                self.hits.append((y, 3, 1, w - 6, ('choose', path)))
+            if self.creating:
+                self.field('name', h - 5, 3, w - 20, 'New folder name')
+                self.button(h - 5, w - 15, 12, 'Create', ('mkdir',), True)
+            else:
+                self.text(h - 5, 3, self.message or f'Selected: {self.chosen or "none"}', 6 if self.message else 2)
+            self.button(h - 3, 3, 12, 'Cancel', ('cancel',))
+            self.button(h - 3, max(17, w - 26), 23,
+                        'Start chat' if purpose == 'new' else 'Open project', ('open',), True)
+            action = self.event()
+            if not action:
+                continue
+            try:
+                kind = action[0]
+                self.message = ''
+                if kind == 'cancel':
+                    return
+                if kind == 'tab':
+                    self.tab, self.offset = action[1], 0
+                    if self.tab == 'browse':
+                        self.chosen = self.folder
+                elif kind == 'choose':
+                    self.chosen = action[1]
+                    if self.tab == 'browse':
+                        self.folder, self.offset = self.chosen, 0
+                elif kind == 'go':
+                    path = Path(self.fields.get('path', '')).expanduser().resolve()
+                    if not path.is_dir():
+                        raise ValueError('That folder does not exist. Browse to its parent to create it.')
+                    self.folder = self.chosen = path
+                    self.tab, self.offset = 'browse', 0
+                elif kind == 'up':
+                    self.folder = self.chosen = self.folder.parent
+                    self.offset = 0
+                elif kind == 'create':
+                    self.creating, self.edit = True, 'name'
+                elif kind == 'mkdir':
+                    name = self.fields.get('name', '').strip()
+                    if not name or name in ('.', '..') or '/' in name:
+                        raise ValueError('Enter a folder name without slashes.')
+                    path = self.folder / name
+                    path.mkdir()
+                    self.folder = self.chosen = path.resolve()
+                    self.creating, self.offset = False, 0
+                    self.fields['name'] = ''
+                elif kind == 'open':
+                    if not self.chosen:
+                        raise ValueError('Choose a folder first.')
+                    remember(self.slot, self.chosen)
+                    if purpose == 'new':
+                        new_chat(self.slot, self.chosen)
+                    return
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                self.error(error)
+
+
+class Welcome(Surface):
+    def run(self):
+        while True:
+            h, w = self.begin()
+            chosen = state().get('selected', {}).get(self.slot)
+            width = min(70, w - 6)
+            x = max(2, (w - width) // 2)
+            y = max(2, h // 2 - 6)
+            heading = 'What are we working on?'
+            self.text(y, max(2, (w - len(heading)) // 2), heading, bold=True)
+            self.panel(y + 3, x, width, 7)
+            self.field('prompt', y + 4, x + 2, width - 4, 'Ask Codex to build, fix, or explore…', height=3)
+            project_label = self.shorten(Path(chosen).name if chosen else 'Choose project', max(8, width - 19)) + ' ▾'
+            self.button(y + 8, x + 2, max(10, width - 18), project_label, ('project',), align='left')
+            self.button(y + 8, x + width - 12, 9, 'Send ↑', ('send',), bool(self.fields.get('prompt', '').strip()))
+            self.text(y + 11, x + 2, 'Local  ·  ' + LABELS[self.slot][0], 2, width - 4)
+            self.text(h - 3, 2, self.message, 6, w - 4)
+            action = self.event()
+            try:
+                if action and action[0] == 'project':
+                    self.popup('picker', 'project')
+                elif action and action[0] == 'send':
+                    prompt = self.fields.get('prompt', '').strip()
+                    if not prompt:
+                        self.edit = 'prompt'
+                        continue
+                    if not chosen:
+                        self.popup('picker', 'project')
+                        chosen = state().get('selected', {}).get(self.slot)
+                    if chosen:
+                        new_chat(self.slot, chosen, title=self.shorten(prompt.splitlines()[0], 48), prompt=prompt)
+                        self.fields['prompt'] = ''
+                        self.message = ''
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                self.error(error)
+
+
+class Chat(Surface):
+    """A mouse-driven terminal chat, with one isolated stdio Codex connection."""
+    def bootstrap(self, path, thread):
+        from hub_runtime import Hub
+        state_file = ROOT / 'tui-state' / self.slot / (thread + '.json' if thread else 'draft-' + str(os.getpid()) + '.json')
+        self.runtime = Hub(state_file=state_file)
+        client = self.runtime.client(self.slot)
+        models, cursor = [], None
+        while not self.stopping:
+            result = client.call('model/list', {'includeHidden': False, 'cursor': cursor})
+            models.extend(result['data'])
+            cursor = result.get('nextCursor')
+            if not cursor:
+                break
+        self.models = models
+        if thread:
+            self.ident = thread
+            self.snapshot = self.runtime.thread(self.slot, thread)
+        else:
+            self.ident = self.runtime.action({'action': 'new', 'slot': self.slot, 'cwd': path})['threadId']
+            self.runtime.file = state_file.parent / (self.ident + '.json')
+            with self.runtime.lock:
+                self.runtime.persist()
+            self.snapshot = self.runtime.thread(self.slot, self.ident)
+        self.window_id = tmux('display-message', '-p', '-t', os.environ['TMUX_PANE'], '#{window_id}')
+        tmux('set-option', '-w', '-t', self.window_id, '@hub_thread', self.ident)
+        def migrate(data):
+            pins = data.setdefault('pins', {}).setdefault(self.slot, [])
+            if 'window:' + self.window_id in pins:
+                pins.remove('window:' + self.window_id)
+                if self.ident not in pins:
+                    pins.append(self.ident)
+        update_state(migrate)
+        title = tmux('display-message', '-p', '-t', self.window_id, '#{window_name}')
+        update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).update({self.ident: {
+            'cwd': path, 'title': title, 'open': True, 'updated_at': int(time.time())}}))
+        if tmux('display-message', '-p', '-t', self.window_id, '#{window_active}') == '1':
+            update_state(lambda data: data.setdefault('active', {}).update({self.slot: self.ident}))
+        saved = self.runtime.saved.get('draft', {})
+        self.fields['prompt'] = saved.get('text', '')
+        self.images = saved.get('images', [])
+        self.cursors['prompt'] = len(self.fields['prompt'])
+        default = next((m for m in models if m.get('isDefault')), models[0] if models else {})
+        self.model = saved.get('model') or self.snapshot['thread'].get('_model') or default.get('model')
+        current = next((m for m in models if m['model'] == self.model), default)
+        self.model = current.get('model')
+        self.approval_mode = saved.get('approvalMode') or self.snapshot['thread'].get('_approvalMode') or 'ask'
+        self.effort = saved.get('effort') or self.snapshot['thread'].get('_effort') or current.get('defaultReasoningEffort')
+        return True
+
+    def save_draft(self):
+        if not self.runtime or not self.ready:
+            return
+        if not self.runtime.lock.acquire(blocking=False):
+            return
+        try:
+            value = {'text': self.fields.get('prompt', ''), 'images': self.images, 'model': self.model, 'effort': self.effort, 'approvalMode': self.approval_mode}
+            if value != self.runtime.saved.get('draft'):
+                self.runtime.saved['draft'] = json.loads(json.dumps(value))
+                self.runtime.persist()
+        finally:
+            self.runtime.lock.release()
+
+    def request(self, action, **data):
+        if self.pending:
+            raise ValueError('Wait for the current action to finish.')
+        self.pending_action = action
+        if action in ('send', 'steer'):
+            self.submitted = (data.get('text', ''), list(data.get('images', [])))
+            data['images'] = list(data.get('images', []))
+            data.setdefault('approvalMode', self.approval_mode)
+        self.pending = self.executor.submit(self.runtime.action, {'action': action, 'slot': self.slot,
+                                           'threadId': self.ident, **data})
+
+    def entries(self, width):
+        cache_key = (self.snapshot.get('revision'), width, tuple(sorted(self.expanded)))
+        if getattr(self, 'entries_key', None) == cache_key:
+            return self.entries_value
+        result, keys = [], []
+        owner = ''
+        owner_index = 0
+        def append(text, color=1, action=None):
+            nonlocal owner_index
+            result.append((text, color, action))
+            keys.append((owner, owner_index))
+            owner_index += 1
+        def add(text, color=1, action=None, indent=0):
+            for line in str(text).splitlines() or ['']:
+                for part in textwrap.wrap(line, max(5, width - indent), replace_whitespace=False, drop_whitespace=False) or ['']:
+                    append(' ' * indent + part, color, action)
+        for turn in self.snapshot.get('thread', {}).get('turns', []):
+            for item in turn.get('items', []):
+                kind = item.get('type')
+                owner, owner_index = str(turn.get('id')) + '/' + str(item.get('id', kind)), 0
+                if kind == 'userMessage':
+                    indent = max(3, width // 5)
+                    bubble = width - indent
+                    append(' ' * indent + '╭' + '─' * (bubble - 2) + '╮', 8, None)
+                    append(' ' * indent + '│ ' + 'You'.ljust(bubble - 4) + ' │', 8, None)
+                    for content in item.get('content', []):
+                        if content['type'] == 'text':
+                            for paragraph in content['text'].splitlines() or ['']:
+                                for line in textwrap.wrap(paragraph, max(5, bubble - 4), replace_whitespace=False) or ['']:
+                                    append(' ' * indent + '│ ' + line.ljust(bubble - 4) + ' │', 8, None)
+                        elif content['type'] == 'localImage':
+                            label = self.shorten('▧ ' + Path(content['path']).name + ' · Preview', bubble - 4)
+                            append(' ' * indent + '│ ' + label.ljust(bubble - 4) + ' │', 8, ('image', content['path']))
+                        elif content['type'] == 'image':
+                            append(' ' * indent + '│ ' + 'Image attachment'.ljust(bubble - 4) + ' │', 8, None)
+                    append(' ' * indent + '╰' + '─' * (bubble - 2) + '╯', 8, None)
+                    add('')
+                elif kind == 'agentMessage':
+                    from hub_markdown import render
+                    text = item.get('text', '')
+                    cached = self.markdown_cache.get(owner)
+                    if not cached or cached[:2] != (text, width):
+                        cached = (text, width, render(text, width))
+                        self.markdown_cache[owner] = cached
+                    for line in cached[2]:
+                        append(line, 'markdown', None)
+                    add('')
+                elif kind == 'imageView':
+                    add('▧  Preview image', 5, ('image', item.get('path', '')))
+                else:
+                    ident = item.get('id', '')
+                    name = {'reasoning': 'Thinking', 'fileChange': 'File changes', 'webSearch': 'Web search', 'contextCompaction': 'Context compaction', 'commandExecution': 'Command', 'mcpToolCall': 'Tool call'}.get(kind, kind)
+                    name = item.get('command') or item.get('title') or name or 'Activity'
+                    add(('▾ ' if ident in self.expanded else '▸ ') + self.shorten(name, width - 2), 2, ('expand', ident))
+                    if ident in self.expanded:
+                        content = item.get('aggregatedOutput') or item.get('text') or item.get('summary') or item.get('changes') or item
+                        add(content if isinstance(content, str) else '\n\n'.join(content) if isinstance(content, list) and all(isinstance(p, str) for p in content) else json.dumps(content, indent=2), 2)
+            owner, owner_index = str(turn.get('id')) + '/status', 0
+            status = turn.get('status', '')
+            add('Working…' if status == 'inProgress' else 'Completed' if status == 'completed' else status, 2)
+            add('')
+        self.row_keys = keys
+        self.entries_key, self.entries_value = cache_key, result
+        return result
+
+    def terminal_style(self, style):
+        from rich.color import ColorSystem
+        fg = style.color.downgrade(ColorSystem.EIGHT_BIT).number if style and style.color and not style.color.is_default else 253
+        bg = style.bgcolor.downgrade(ColorSystem.EIGHT_BIT).number if style and style.bgcolor and not style.bgcolor.is_default else 233
+        pair = (fg, bg)
+        if curses.COLORS >= 256 and curses.COLOR_PAIRS > 32:
+            if pair not in self.palette and len(self.palette) < curses.COLOR_PAIRS - 20:
+                ident = len(self.palette) + 20
+                curses.init_pair(ident, fg, bg)
+                self.palette[pair] = ident
+            attr = curses.color_pair(self.palette.get(pair, 1))
+        else:
+            attr = curses.color_pair(1)
+        if style:
+            for enabled, value in ((style.bold, curses.A_BOLD), (style.italic, getattr(curses, 'A_ITALIC', 0)),
+                                   (style.underline, curses.A_UNDERLINE), (style.dim, curses.A_DIM)):
+                if enabled:
+                    attr |= value
+        return attr
+
+    def draw_markdown(self, y, x, segments, width):
+        from rich.cells import cell_len
+        offset = 0
+        for segment in segments:
+            if segment.control:
+                continue
+            text = ''.join(c if c.isprintable() else ' ' for c in segment.text)
+            cells = cell_len(text)
+            try:
+                self.screen.addstr(y, x + offset, text, self.terminal_style(segment.style))
+            except curses.error:
+                pass
+            if segment.style and segment.style.link:
+                self.hits.append((y, x + offset, 1, min(cells, width - offset), ('link', segment.style.link)))
+            offset += cells
+
+    def draw_chat(self):
+        h, w = self.begin()
+        if w < 30 or h < 18:
+            self.text(1, 1, 'Enlarge this terminal to use the chat.', 2)
+            return
+        self.button(0, 1, 4, '☰', ('sidebar',), quiet=True)
+        self.button(0, 6, 4, '▣', ('select',), quiet=True)
+        self.button(0, 11, 4, '⧉', ('copy',), quiet=True)
+        self.button(0, w - 6, 5, 'ⓘ', ('details',), quiet=True)
+        name = state().get('names', {}).get(self.slot, {}).get(self.ident) or self.snapshot.get('thread', {}).get('name') or 'New chat'
+        self.text(0, 17, self.shorten(name, w - 24), bold=True)
+        right = 27 if self.details and w >= 85 else 0
+        end = w - right
+        width = max(20, min(90, end - 6))
+        left = max(2, (end - width) // 2)
+        if right:
+            self.text(2, end + 2, 'Chat details', bold=True)
+            for y, label in enumerate([LABELS[self.slot][0], Path(self.path).name, self.model or 'Default',
+                                       self.effort or '', 'Working' if self.snapshot.get('active') else 'Ready'], 4):
+                self.text(y, end + 2, self.shorten(label, right - 4), 2, right - 4)
+            pinned = self.ident in state().get('pins', {}).get(self.slot, [])
+            self.button(11, end + 2, right - 4, 'Unpin chat' if pinned else 'Pin chat', ('pin',))
+            self.button(13, end + 2, right - 4, 'Open in Codex CLI', ('cli',))
+        elif self.details:
+            self.message = f'{LABELS[self.slot][0]} · {Path(self.path).name} · {self.model} · {self.effort}'
+        self.text(2, left, 'Local · ' + Path(self.path).name, 2, width)
+        self.divider(3, left, width)
+        bottom = h - 10
+        previous_keys = getattr(self, 'row_keys', [])
+        anchor = previous_keys[min(self.offset, len(previous_keys) - 1)] if previous_keys and not self.follow else None
+        previous_width = getattr(self, 'transcript_width', width)
+        lines = self.entries(width)
+        if anchor:
+            owner, index = anchor
+            if width != previous_width:
+                index = round(index * previous_width / width)
+            matches = [(row, key[1]) for row, key in enumerate(self.row_keys) if key[0] == owner]
+            if matches:
+                self.offset = min(matches, key=lambda match: abs(match[1] - index))[0]
+        self.transcript_width = width
+        available = max(1, bottom - 5)
+        self.visible_lines = available
+        self.max_scroll = max(0, len(lines) - available)
+        if self.follow:
+            self.offset = max(0, len(lines) - available)
+        self.offset = min(max(0, self.offset), max(0, len(lines) - available))
+        for y, (text, color, action) in enumerate(lines[self.offset:self.offset + available], 5):
+            if color == 'markdown':
+                self.draw_markdown(y, left, text, width)
+                continue
+            indent = len(text) - len(text.lstrip()) if color in (7, 8) else 0
+            self.text(y, left + indent, text[indent:].ljust(width - indent) if color in (7, 8) else text, color, width - indent)
+            if action:
+                self.hits.append((y, left, 1, width, action))
+        if len(lines) > available:
+            track_x = end - 2
+            thumb_height = max(1, round(available * available / len(lines)))
+            thumb_top = round((available - thumb_height) * self.offset / max(1, self.max_scroll))
+            for row in range(available):
+                self.text(5 + row, track_x, '┃' if thumb_top <= row < thumb_top + thumb_height else '│', 2 if thumb_top <= row < thumb_top + thumb_height else 9, 1)
+            self.hits.append((5, track_x - 1, available, 2, ('scroll-track', 5, available)))
+        if not lines:
+            self.text(max(5, bottom // 2), left, 'What are we working on?', bold=True)
+        if not self.follow:
+            self.button(bottom - 1, left + width - 6, 5, '↓', ('latest',), True)
+        count = len(self.snapshot.get('queue', []))
+        requests = len(self.snapshot.get('requests', []))
+        self.button(bottom, left, 7, '≡ ' + str(count), ('queue',), selected=bool(count))
+        self.button(bottom, left + 8, 4, '+', ('attach',), quiet=True)
+        if requests:
+            self.button(bottom, left + 13, min(20, width - 32), f'Respond ({requests})', ('approval',), True)
+        elif self.images:
+            self.button(bottom, left + 13, min(20, width - 32), f'▧ {len(self.images)}', ('images',))
+        mode_label = {'ask': 'Ask approval', 'auto': 'Auto review', 'full': 'Full access'}[self.approval_mode]
+        self.button(bottom, left + width - 17, 17, '◇ ' + mode_label, ('approval-mode',), quiet=True)
+        self.panel(bottom + 1, left, width, 5)
+        self.field('prompt', bottom + 2, left + 1, width - 2, 'Message Codex…', height=3)
+        model_width = min(25, max(8, width - 25))
+        self.button(h - 3, left, model_width, self.shorten((self.model or 'Model') + ' ▾', model_width), ('model',), quiet=True)
+        self.button(h - 3, left + model_width + 1, 9, (self.effort or 'Effort') + ' ▾', ('effort',), quiet=True)
+        self.button(h - 3, left + width - 13, 4, '◔', ('context',), quiet=True)
+        if self.snapshot.get('active'):
+            self.button(h - 2, left + width - 11, 4, '↳', ('steer',), quiet=True)
+            self.button(h - 2, left + width - 6, 5, '■', ('stop',), quiet=True)
+        self.button(h - 3, left + width - 6, 5, '↑', ('send',), True)
+        hints = {'sidebar': 'Toggle sidebar', 'select': 'Select text · drag in tmux selection mode', 'copy': 'Copy latest response',
+                 'details': 'Chat details', 'latest': 'Jump to latest response', 'queue': 'Review queued messages', 'attach': 'Attach image', 'images': 'Preview attached images',
+                 'approval-mode': 'Approval mode · applies next turn', 'steer': 'Send now · steer current turn', 'stop': 'Stop current turn', 'send': 'Queue message' if self.snapshot.get('active') else 'Send message'}
+        hover_help = hints.get(self.hover[0], '') if self.hover else ''
+        self.text(h - 1, 1, self.message or self.snapshot.get('error') or ('Connecting…' if not self.ready else 'Queue paused · click ≡ to review and resume' if self.snapshot.get('paused') and count else hover_help), 6 if self.message or self.snapshot.get('error') else 2, w - 2)
+        if not self.ready and not self.pending:
+            self.button(h - 2, left, 12, 'Retry', ('retry',))
+        if self.pending:
+            self.text(h - 2, left, 'Working on your action…', 2, width - 20)
+        if self.hover == ('context',):
+            self.context_popup(h - 12, max(1, left + width - 36), min(36, width))
+        prompt = self.fields.get('prompt', '')
+        if self.edit == 'prompt' and prompt.startswith('/') and '\n' not in prompt and ' ' not in prompt:
+            commands = [(command, description) for command, description in self.slash_commands().items() if command.startswith(prompt)][:8]
+            for row, (command, description) in enumerate(commands):
+                self.button(max(4, bottom - len(commands)) + row, left, width, command + '  ' + description, ('slash', command), quiet=True, align='left')
+
+    def context_lines(self):
+        thread = self.snapshot.get('thread', {})
+        usage = thread.get('_tokenUsage', {})
+        used, window = usage.get('last', {}).get('totalTokens'), usage.get('modelContextWindow')
+        if used is None or not window:
+            return ['Context window', 'Usage available after a turn', 'Click to compact when idle']
+        percentage = max(0, min(100, round(100 * used / window)))
+        status = 'Compacting…' if thread.get('_compacting') else 'Compacted recently' if thread.get('_compactedAt') else 'Click to compact when idle'
+        return ['Context window', f'{percentage}% full', f'{used:,} / {window:,} tokens', status]
+
+    def context_popup(self, y, x, width):
+        lines = self.context_lines()
+        self.panel(y, x, width, len(lines) + 2)
+        for index, line in enumerate(lines):
+            self.text(y + 1 + index, x + 2, line, 8, width - 4)
+
+    @staticmethod
+    def slash_commands():
+        return {'/model': 'Choose model', '/approvals': 'Approval mode', '/compact': 'Compact context',
+                '/status': 'Context and chat details', '/new': 'New chat', '/resume': 'Open saved chat',
+                '/stop': 'Stop current turn', '/queue': 'Review queue', '/pin': 'Pin or unpin',
+                '/help': 'Available commands'}
+
+    def event(self):
+        before = self.fields.get('prompt', '')
+        action = super().event()
+        if self.edit == 'prompt' and before.startswith('/') and self.fields.get('prompt') == before + '\n':
+            self.fields['prompt'] = before
+            return ('slash', before)
+        return action
+
+    def handle_slash(self, text):
+        command = text.strip()
+        if command not in self.slash_commands():
+            raise ValueError('Unsupported slash command. Use /help or open this chat in Codex CLI for CLI-specific commands.')
+        self.fields['prompt'] = ''
+        self.cursors['prompt'] = 0
+        actions = {'/model': 'model', '/approvals': 'approval-mode', '/compact': 'context', '/stop': 'stop', '/queue': 'queue', '/pin': 'pin'}
+        if command in actions:
+            return actions[command]
+        if command == '/status':
+            self.choice('Chat status', [(line, None) for line in self.context_lines()] + [(self.model or 'Default model', None), (str(self.path), None)])
+        elif command == '/new':
+            new_chat(self.slot, self.path)
+        elif command == '/resume':
+            rows = history(self.slot)[0]
+            selected = self.choice('Open saved chat', [(row['title'], row['id']) for row in rows])
+            if selected:
+                row = next(r for r in rows if r['id'] == selected)
+                new_chat(self.slot, row['cwd'], row['title'], thread=selected)
+        elif command == '/help':
+            selected = self.choice('Slash commands · CLI-specific commands use the CLI fallback', [(c + '  ' + d, c) for c, d in self.slash_commands().items()])
+            if selected and selected != '/help':
+                return self.handle_slash(selected)
+        return None
+
+    def copy_response(self):
+        text = '\n\n'.join(item.get('text', '') for turn in self.snapshot.get('thread', {}).get('turns', [])[-1:]
+                           for item in turn.get('items', []) if item.get('type') == 'agentMessage')
+        if not text:
+            raise ValueError('No response to copy yet.')
+        clipboard = ['pbcopy'] if sys.platform == 'darwin' else ['wl-copy'] if shutil.which('wl-copy') else ['xclip', '-selection', 'clipboard'] if shutil.which('xclip') else None
+        if clipboard and shutil.which(clipboard[0]):
+            subprocess.run(clipboard, input=text.encode(), check=True)
+        else:
+            tmux('set-buffer', text)
+        self.message = 'Copied response.'
+
+    def choice(self, title, choices):
+        original_offset = self.offset
+        offset = 0
+        while not self.stopping:
+            h, w = self.begin()
+            self.text(1, 3, title, bold=True)
+            available = max(1, h - 7)
+            offset = min(max(0, offset), max(0, len(choices) - available))
+            for y, (label, value) in enumerate(choices[offset:offset + available], 4):
+                self.button(y, 3, w - 6, label, ('pick', value), quiet=True, align='left')
+            self.button(h - 2, 3, 12, 'Back', ('cancel',))
+            self.offset = offset
+            action = self.event()
+            offset = self.offset
+            if action and action[0] == 'cancel':
+                self.offset = original_offset
+                return None
+            if action and action[0] == 'pick':
+                self.offset = original_offset
+                return action[1]
+
+    def edit_text(self, title, text='', button='Save'):
+        original = dict(self.fields)
+        original_edit = self.edit
+        original_cursors = dict(self.cursors)
+        self.fields['prompt'], self.edit = text, 'prompt'
+        self.cursors['prompt'] = len(text)
+        result = None
+        while not self.stopping:
+            h, w = self.begin()
+            self.text(2, 3, title, bold=True)
+            self.field('prompt', 5, 3, w - 6, 'Type here…', height=max(2, h - 10))
+            self.button(h - 3, 3, 12, 'Cancel', ('cancel',))
+            self.button(h - 3, w - 18, 15, button, ('save',), True)
+            action = self.event()
+            if action in (('cancel',), ('save',)):
+                result = self.fields.get('prompt', '') if action == ('save',) else None
+                break
+        self.fields, self.edit, self.cursors = original, original_edit, original_cursors
+        return result
+
+    def image_picker(self):
+        folder = Path(self.path)
+        while not self.stopping:
+            entries = sorted((p for p in folder.iterdir() if not p.name.startswith('.') and
+                              (p.is_dir() or p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.gif', '.webp'))),
+                             key=lambda p: (not p.is_dir(), p.name.lower()))
+            choices = [('Paste an image path…', 'path'), ('↑  Parent folder', 'up')]
+            choices += [('▸  ' + p.name if p.is_dir() else '▧  ' + p.name, str(p)) for p in entries]
+            value = self.choice('Attach image · ' + str(folder), choices)
+            if value is None:
+                return
+            if value == 'up':
+                folder = folder.parent
+            elif value == 'path':
+                entered = self.edit_text('Image file path', '', 'Attach')
+                if entered:
+                    candidate = Path(entered.strip().strip('"\'')).expanduser().resolve()
+                    if candidate.is_dir():
+                        folder = candidate
+                        continue
+                    self.add_image(candidate)
+                    return
+            elif Path(value).is_dir():
+                folder = Path(value)
+            else:
+                self.add_image(Path(value))
+                return
+
+    def add_image(self, path):
+        if len(self.images) >= 10:
+            raise ValueError('Attach up to 10 images per message.')
+        self.runtime.message(self.slot, self.ident, {'text': '', 'images': [str(path)]})
+        self.images.append(str(path))
+        self.save_draft()
+
+    def preview_image(self, path):
+        path = Path(path).expanduser()
+        if not path.is_absolute():
+            path = Path(self.path) / path
+        path = path.resolve()
+        try:
+            from PIL import Image, ImageOps
+            with Image.open(path) as source:
+                original = ImageOps.exif_transpose(source).convert('RGB')
+        except ImportError:
+            original = None
+        while not self.stopping:
+            h, w = self.begin()
+            self.text(1, 2, path.name, bold=True)
+            if original:
+                thumb = original.copy()
+                thumb.thumbnail((max(2, min(90, w - 6)), max(2, (h - 8) * 2)))
+                x0 = max(2, (w - thumb.width) // 2)
+                pixels = thumb.load()
+                for y in range(0, thumb.height, 2):
+                    for x in range(thumb.width):
+                        upper = pixels[x, y]
+                        lower = pixels[x, min(y + 1, thumb.height - 1)]
+                        def quant(rgb):
+                            return 16 + 36 * round(rgb[0] / 51) + 6 * round(rgb[1] / 51) + round(rgb[2] / 51)
+                        fg, bg = quant(upper), quant(lower)
+                        pair = (fg, bg)
+                        if curses.COLORS >= 256 and curses.COLOR_PAIRS > 32:
+                            if pair not in self.palette and len(self.palette) < curses.COLOR_PAIRS - 20:
+                                code = len(self.palette) + 20
+                                curses.init_pair(code, fg, bg)
+                                self.palette[pair] = code
+                            attr = curses.color_pair(self.palette.get(pair, 1))
+                        else:
+                            attr = curses.color_pair(1)
+                        try:
+                            self.screen.addstr(3 + y // 2, x0 + x, '▀', attr)
+                        except curses.error:
+                            pass
+                self.text(h - 4, 2, f'{original.width} × {original.height} · terminal thumbnail', 2)
+            else:
+                self.text(5, 3, 'Install Pillow for terminal thumbnails; full-resolution preview is available.', 2, w - 6)
+            self.button(h - 2, 2, 10, 'Back', ('cancel',))
+            self.button(h - 2, max(14, w - 24), 22, 'Full resolution', ('full',))
+            action = self.event()
+            if action == ('cancel',):
+                return
+            if action == ('full',):
+                if sys.platform == 'darwin' and shutil.which('qlmanage'):
+                    subprocess.Popen(['qlmanage', '-p', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    self.open_external(str(path))
+
+    def open_external(self, value, text=False):
+        opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+        if not shutil.which(opener):
+            raise ValueError('Install a system file/browser opener to open this link.')
+        args = [opener, '-t', value] if text and sys.platform == 'darwin' else [opener, value]
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def open_link(self, value):
+        from urllib.parse import urlparse, unquote
+        if urlparse(value).scheme in ('http', 'https'):
+            self.open_external(value)
+            return
+        if urlparse(value).scheme not in ('', 'file'):
+            raise ValueError('This link type cannot be opened.')
+        path = Path(re.sub(r':\d+(?::\d+)?$', '', unquote(value.removeprefix('file://')))).expanduser()
+        if not path.is_absolute():
+            path = Path(self.path) / path
+        path = path.resolve()
+        if not path.is_file():
+            raise ValueError('Linked file is unavailable.')
+        if path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.gif', '.webp'):
+            self.preview_image(path)
+        elif path.suffix.lower() == '.pdf':
+            self.open_external(str(path))
+        else:
+            self.open_external(str(path), text=True)
+
+    def manage_queue(self):
+        while not self.stopping:
+            snapshot = self.runtime.thread(self.slot, self.ident)
+            entries = snapshot['queue']
+            choices = [('Resume queued messages', 'resume')] if snapshot['paused'] and entries else []
+            choices += [(self.shorten(entry['text'] or 'Image attachment', 65), entry['id']) for entry in entries]
+            value = self.choice('Message queue' + (' · Paused' if snapshot['paused'] else ''), choices)
+            if value is None:
+                return
+            if value == 'resume':
+                self.request('resumeQueue')
+                return
+            entry = next((e for e in entries if e['id'] == value), None)
+            if not entry:
+                continue
+            chosen = self.choice('Queued message', [('Edit text', 'edit'), ('Remove from queue', 'remove')])
+            if chosen == 'edit':
+                text = self.edit_text('Edit queued message', entry['text'])
+                if text is not None:
+                    self.request('queue', id=value, text=text)
+                    return
+            elif chosen == 'remove':
+                self.request('queue', id=value, delete=True)
+                return
+
+    def respond(self):
+        requests = self.snapshot.get('requests', [])
+        if not requests:
+            return
+        request = requests[0]
+        params = request['params']
+        if params.get('questions'):
+            answers = {}
+            for question in params['questions']:
+                options = [(o['label'], o['label']) for o in question.get('options') or []]
+                value = self.choice(question['question'], options + [('Write an answer…', '__text__')])
+                if value == '__text__':
+                    value = self.edit_text(question['question'], '', 'Submit')
+                if value is None:
+                    return
+                answers[question['id']] = value
+            self.request('answer', requestId=request['id'], answers=answers)
+        else:
+            content = params.get('command') or json.dumps(params.get('permissions') or params, indent=2)
+            while not self.stopping:
+                h, w = self.begin()
+                self.text(1, 3, 'Approval requested', bold=True)
+                lines = textwrap.wrap(params.get('reason') or '', w - 6) + [line for part in content.splitlines() for line in textwrap.wrap(part, w - 6)]
+                visible = max(1, h - 7)
+                self.offset = min(self.offset, max(0, len(lines) - visible))
+                for y, line in enumerate(lines[self.offset:self.offset + visible], 3):
+                    self.text(y, 3, line, width=w - 6)
+                self.button(h - 2, 3, 14, 'Allow once', ('allow',), True)
+                self.button(h - 2, 20, 12, 'Decline', ('decline',))
+                self.button(h - 2, 35, 10, 'Back', ('cancel',))
+                action = self.event()
+                if action == ('cancel',):
+                    return
+                if action in (('allow',), ('decline',)):
+                    self.request('answer', requestId=request['id'], accept=action == ('allow',))
+                    return
+
+    def name_from_prompt(self, prompt):
+        current = tmux('display-message', '-p', '-t', self.window_id, '#{window_name}')
+        title = prompt.strip().splitlines()[0][:60] if prompt.strip() and current == 'New chat' else current
+        if title != 'New chat':
+            tmux('rename-window', '-t', self.window_id, title)
+            update_state(lambda data: (data.setdefault('names', {}).setdefault(self.slot, {}).setdefault(self.ident, title),
+                                      data.setdefault('chats', {}).setdefault(self.slot, {}).get(self.ident, {}).update({'title': title})))
+
+    def open_cli(self):
+        if self.snapshot.get('active') or self.snapshot.get('queue'):
+            raise ValueError('Stop the active turn and clear the queue before switching this chat to CLI.')
+        self.save_draft()
+        for client in self.runtime.clients.values():
+            client.close()
+        tmux('set-option', '-w', '-t', self.window_id, '@hub_engine', 'cli')
+        curses.endwin()
+        env = os.environ.copy()
+        env['CODEX_HOME'] = str(account_home(self.slot))
+        for key in AUTH_ENV:
+            env.pop(key, None)
+        os.execvpe('codex', ['codex', 'resume', self.ident, '-C', self.path], env)
+
+    def run(self, path, thread='', prompt=''):
+        from concurrent.futures import ThreadPoolExecutor
+        self.path, self.ident = path, thread
+        self.runtime = None
+        self.ready, self.follow, self.details = False, True, False
+        self.stopping = False
+        self.snapshot, self.models, self.images = {}, [], []
+        self.markdown_cache = {}
+        self.row_keys, self.visible_lines, self.max_scroll = [], 1, 0
+        self.model = self.effort = None
+        self.approval_mode = 'ask'
+        self.expanded = set()
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.pending = self.executor.submit(self.bootstrap, path, thread)
+        self.pending_action = 'bootstrap'
+        self.screen.timeout(150)
+        self.edit = 'prompt'
+        def stop(*_):
+            self.stopping = True
+        signal.signal(signal.SIGTERM, stop)
+        try:
+            while not self.stopping:
+                if self.pending and self.pending.done():
+                    try:
+                        self.pending.result()
+                        if self.pending_action == 'bootstrap':
+                            self.ready = True
+                            if prompt:
+                                self.fields['prompt'] = prompt
+                                self.cursors['prompt'] = len(prompt)
+                        elif self.pending_action in ('send', 'steer'):
+                            self.name_from_prompt(self.submitted[0])
+                            if self.fields.get('prompt', '') == self.submitted[0]:
+                                self.fields['prompt'] = ''
+                                self.cursors['prompt'] = 0
+                            if self.images == self.submitted[1]:
+                                self.images = []
+                        self.message = ''
+                    except Exception as error:
+                        self.error(error)
+                    finally:
+                        bootstrap = self.pending_action == 'bootstrap'
+                        self.pending = None
+                    if bootstrap and prompt and self.ready:
+                        self.request('send', text=prompt, model=self.model, effort=self.effort)
+                        prompt = ''
+                if self.ready and self.runtime.lock.acquire(blocking=False):
+                    try:
+                        if self.runtime.revision != self.snapshot.get('revision'):
+                            self.snapshot = self.runtime.thread(self.slot, self.ident)
+                    finally:
+                        self.runtime.lock.release()
+                self.save_draft()
+                self.draw_chat()
+                previous_offset = self.offset
+                action = self.event()
+                if self.offset != previous_offset:
+                    self.follow = self.offset >= self.max_scroll
+                if not action:
+                    continue
+                try:
+                    kind = action[0]
+                    self.message = ''
+                    if kind == 'slash' or kind == 'send' and self.fields.get('prompt', '').startswith('/'):
+                        kind = self.handle_slash(action[1] if kind == 'slash' else self.fields['prompt'])
+                        if not kind:
+                            continue
+                    if kind == 'scroll-to':
+                        self.offset = round(action[1] * self.max_scroll)
+                        self.follow = self.offset >= self.max_scroll
+                    elif kind == 'page':
+                        self.offset = min(self.max_scroll, max(0, self.offset + action[1] * max(1, self.visible_lines - 2)))
+                        self.follow = self.offset >= self.max_scroll
+                    elif kind == 'select':
+                        tmux('copy-mode', '-t', os.environ['TMUX_PANE'])
+                    elif kind == 'copy':
+                        self.copy_response()
+                    elif kind == 'sidebar':
+                        pane = os.environ['TMUX_PANE']
+                        hidden = tmux('show-option', '-wv', '-t', pane, '@hub_sidebar_hidden', check=False) == '1'
+                        tmux('set-option', '-w', '-t', pane, '@hub_sidebar_hidden', '0' if hidden else '1')
+                        side = tmux('show-option', '-wv', '-t', pane, '@hub_sidebar')
+                        tmux('resize-pane', '-t', side, '-x', '36' if hidden else '1')
+                    elif kind == 'details':
+                        if self.screen.getmaxyx()[1] < 85 and self.ready:
+                            selected = self.choice('Chat details', [('Pin / unpin chat', 'pin'), ('Open in Codex CLI', 'cli')])
+                            if selected == 'pin':
+                                toggle_pin(self.slot, self.ident)
+                            elif selected == 'cli':
+                                self.open_cli()
+                        else:
+                            self.details = not self.details
+                    elif kind == 'retry' and not self.ready and not self.pending:
+                        if self.runtime:
+                            for client in self.runtime.clients.values():
+                                client.close()
+                        self.pending_action = 'bootstrap'
+                        self.pending = self.executor.submit(self.bootstrap, self.path, self.ident)
+                    elif not self.ready:
+                        continue
+                    elif kind in ('send', 'steer'):
+                        self.request(kind, text=self.fields.get('prompt', ''), images=self.images,
+                                     model=self.model, effort=self.effort)
+                        self.follow = True
+                    elif kind == 'stop':
+                        self.request('stop')
+                    elif kind == 'pin':
+                        toggle_pin(self.slot, self.ident)
+                    elif kind == 'model':
+                        selected = self.choice('Choose model · ' + LABELS[self.slot][0], [(m['displayName'], m['model']) for m in self.models])
+                        if selected:
+                            self.model = selected
+                            self.effort = next(m['defaultReasoningEffort'] for m in self.models if m['model'] == selected)
+                    elif kind == 'effort':
+                        model = next(m for m in self.models if m['model'] == self.model)
+                        selected = self.choice('Reasoning effort', [(e['reasoningEffort'] + ' · ' + e.get('description', ''), e['reasoningEffort']) for e in model['supportedReasoningEfforts']])
+                        if selected:
+                            self.effort = selected
+                    elif kind == 'approval-mode':
+                        selected = self.choice('Approval mode · takes effect on the next turn', [('Ask for approval · project sandbox, explicit approvals', 'ask'), ('Approve for me · automatic risk review, project sandbox', 'auto'), ('Full access · unrestricted files/network, no approval prompts', 'full')])
+                        if selected:
+                            self.approval_mode = selected
+                    elif kind == 'context':
+                        selected = self.choice('Context window', [(line, None) for line in self.context_lines()] + [('Compact now', 'compact')])
+                        if selected == 'compact':
+                            self.request('compact')
+                    elif kind == 'latest':
+                        self.follow = True
+                    elif kind == 'expand':
+                        self.follow = False
+                        self.expanded.symmetric_difference_update([action[1]])
+                    elif kind == 'attach':
+                        self.image_picker()
+                    elif kind == 'images':
+                        image = self.choice('Attached images', [(Path(p).name, p) for p in self.images])
+                        if image:
+                            chosen = self.choice(Path(image).name, [('Preview', 'preview'), ('Remove attachment', 'remove')])
+                            if chosen == 'preview':
+                                self.preview_image(image)
+                            elif chosen == 'remove':
+                                self.images.remove(image)
+                    elif kind == 'image':
+                        self.preview_image(action[1])
+                    elif kind == 'link':
+                        self.open_link(action[1])
+                    elif kind == 'queue':
+                        self.manage_queue()
+                    elif kind == 'approval':
+                        self.respond()
+                    elif kind == 'cli':
+                        self.open_cli()
+                except (OSError, ValueError, RuntimeError, StopIteration, subprocess.CalledProcessError) as error:
+                    self.error(error)
+        finally:
+            self.save_draft()
+            if self.runtime:
+                for client in self.runtime.clients.values():
+                    client.close()
+            self.executor.shutdown(wait=False, cancel_futures=True)
+
+
+class Settings(Surface):
+    def form(self, ident=None):
+        account = hub_config.load(ROOT)['accounts'].get(ident, {})
+        self.fields = {'id': ident or '', 'label': account.get('label', ''),
+                       'description': account.get('description', ''), 'home': ''}
+        self.edit = 'label' if ident else 'id'
+        while True:
+            h, w = self.begin()
+            self.text(2, 3, 'Workspace settings' if ident else 'Add account', bold=True)
+            for y, name, title in ((4, 'id', 'Account ID'), (7, 'label', 'Display label'), (10, 'description', 'Description')):
+                self.text(y, 3, title, 2)
+                if name == 'id' and ident:
+                    self.text(y + 1, 3, ident)
+                else:
+                    self.field(name, y + 1, 3, w - 6, title)
+            if not ident:
+                self.text(13, 3, 'Existing Codex home (optional; blank creates an isolated home)', 2, w - 6)
+                self.field('home', 14, 3, w - 6, '~/.codex or another existing home')
+            else:
+                self.text(14, 3, account['home'], 2, w - 6)
+                self.button(17, 3, 14, 'Sign in', ('login',))
+                self.button(17, 19, 18, 'Make default', ('default',))
+            self.button(h - 3, 3, 12, 'Cancel', ('cancel',))
+            self.button(h - 3, w - 18, 15, 'Save', ('save',), True)
+            self.text(h - 1, 2, self.message, 6, w - 4)
+            action = self.event()
+            try:
+                if action == ('cancel',):
+                    return None
+                if action == ('login',):
+                    self.popup('account-login', ident)
+                elif action == ('default',):
+                    hub_config.update(ident, default=True, root=ROOT)
+                    return ident
+                elif action == ('save',):
+                    if ident:
+                        hub_config.update(ident, self.fields['label'], self.fields['description'], root=ROOT)
+                    else:
+                        ident = self.fields['id'].strip()
+                        hub_config.add(ident, self.fields['label'].strip() or ident,
+                                       self.fields['home'].strip() or None, self.fields['description'].strip(), ROOT)
+                    return ident
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                self.error(error)
+
+    def run(self):
+        while True:
+            reload_config()
+            h, w = self.begin()
+            self.text(2, 3, 'Workspace settings', bold=True)
+            self.text(3, 3, 'Labels and homes are configured locally.', 2)
+            accounts = list(CONFIG['accounts'].items())
+            available = max(1, (h - 12) // 2)
+            self.offset = min(self.offset, max(0, len(accounts) - available))
+            for y, (ident, account) in enumerate(accounts[self.offset:self.offset + available]):
+                row = 6 + y * 2
+                self.button(row, 3, w - 19, account['label'] + (' · default' if ident == CONFIG['defaultAccount'] else ''), ('switch', ident), quiet=True, align='left')
+                self.button(row, w - 15, 12, 'Edit', ('edit', ident))
+            self.button(h - 4, 3, 16, '+ Add account', ('add',), True)
+            self.button(h - 2, 3, 12, 'Back', ('cancel',))
+            self.text(h - 1, 2, self.message, 6, w - 4)
+            action = self.event()
+            try:
+                if action == ('cancel',):
+                    return
+                if action and action[0] in ('edit', 'add'):
+                    selected = self.form(action[1] if action[0] == 'edit' else None)
+                    reload_config()
+                    setup()
+                    if selected:
+                        self.message = 'Saved. Click its label to open the workspace.'
+                elif action and action[0] == 'switch':
+                    setup()
+                    tmux('switch-client', '-t', account_session(action[1]))
+                    return
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                self.error(error)
+
+
+class Manage(Surface):
+    def run(self, wid):
+        saved = wid.startswith('thread:')
+        window = None if saved else next((w for w in windows() if w['id'] == wid and w['slot'] == self.slot), None)
+        row = next((r for r in history(self.slot)[0] if r['id'] == wid[7:]), None) if saved else None
+        if not window and not row:
+            return
+        key = row['id'] if saved else pin_key(window)
+        self.fields['name'] = state().get('names', {}).get(self.slot, {}).get(key, row['title'] if saved else window['name'])
+        confirming = False
+        while True:
+            h, w = self.begin()
+            self.text(2, 3, 'Chat options', bold=True)
+            self.text(4, 3, 'Chat name', 2)
+            self.field('name', 6, 3, w - 6, 'Chat name')
+            self.button(8, 3, 18, 'Save name', ('save',), True)
+            pinned = key in state().get('pins', {}).get(self.slot, [])
+            self.button(8, 23, 18, 'Unpin chat' if pinned else 'Pin chat', ('pin',))
+            if not saved:
+                self.text(11, 3, 'Closing stops this chat. Its saved history is kept.', 2)
+                self.button(13, 3, 24, 'Confirm close' if confirming else 'Close window', ('close',))
+            self.button(h - 3, 3, 18, 'Cancel', ('cancel',))
+            action = self.event()
+            if action == ('cancel',):
+                return
+            if action == ('pin',):
+                toggle_pin(self.slot, key)
+                return
+            if action == ('save',) and self.fields['name'].strip():
+                title = self.fields['name'].strip()
+                if window:
+                    tmux('rename-window', '-t', wid, title)
+                update_state(lambda data: (data.setdefault('names', {}).setdefault(self.slot, {}).update({key: title}),
+                                          data.setdefault('chats', {}).setdefault(self.slot, {}).get(key, {}).update({'title': title})))
+                return
+            if action == ('close',) and window:
+                if confirming:
+                    home = next(w for w in windows() if w['slot'] == self.slot and w['kind'] == 'home')
+                    focus(home)
+                    if window.get('thread'):
+                        update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).get(window['thread'], {}).update({'open': False}))
+                    tmux('kill-window', '-t', wid)
+                    return
+                confirming = True
+
+
+def account_command(args):
+    import argparse
+    parser = argparse.ArgumentParser(prog='codex-hub accounts')
+    sub = parser.add_subparsers(dest='operation', required=True)
+    sub.add_parser('list')
+    add = sub.add_parser('add')
+    add.add_argument('id'); add.add_argument('--label'); add.add_argument('--home'); add.add_argument('--description', default='')
+    edit = sub.add_parser('edit')
+    edit.add_argument('id'); edit.add_argument('--label'); edit.add_argument('--description'); edit.add_argument('--default', action='store_true')
+    remove = sub.add_parser('remove'); remove.add_argument('id')
+    for name in ('login', 'logout', 'status', 'run'):
+        command_parser = sub.add_parser(name)
+        command_parser.add_argument('id'); command_parser.add_argument('args', nargs=argparse.REMAINDER)
+    options = parser.parse_args(args or ['list'])
+    if options.operation == 'list':
+        for ident, account in hub_config.load(ROOT)['accounts'].items():
+            print(ident + '\t' + account['label'] + '\t' + account['home'])
+    elif options.operation == 'add':
+        hub_config.add(options.id, options.label, options.home, options.description, ROOT)
+        print('Added ' + options.id + '. Sign in with: codex-hub accounts login ' + options.id)
+    elif options.operation == 'edit':
+        hub_config.update(options.id, options.label, options.description, options.default, ROOT)
+    elif options.operation == 'remove':
+        result = subprocess.run(['tmux', '-S', str(SOCKET), 'has-session', '-t', account_session(options.id)], capture_output=True)
+        if result.returncode == 0:
+            raise ValueError('Close that account’s tmux session before removing it. Its files will be retained.')
+        hub_config.remove(options.id, ROOT)
+    else:
+        env = hub_config.environment(options.id, ROOT)
+        argv = ['codex'] + (['login', 'status'] if options.operation == 'status' else [] if options.operation == 'run' else [options.operation]) + options.args
+        os.execvpe('codex', argv, env)
+
+
+def main():
+    args = sys.argv[1:] or ['attach']
+    mode = args[0]
+    if mode in ('--version', '-V'):
+        print('Codex Hub ' + hub_config.VERSION)
+        return
+    if mode in ('-h', '--help'):
+        print('Codex Hub — a terminal workspace for Codex\n\n'
+              'codex-hub                         Open the workspace\n'
+              'codex-hub ACCOUNT                 Open a configured account\n'
+              'codex-hub new ACCOUNT [PATH] [TITLE]\n'
+              'codex-hub resume ACCOUNT [PATH]    Stock CLI saved-chat picker\n'
+              'codex-hub cli ACCOUNT [PATH]       Stock CLI chat\n'
+              'codex-hub accounts --help          Add, label, and sign into accounts\n'
+              'codex-hub config                   Show private configuration path\n'
+              'codex-hub usage [ACCOUNT|all]      Read usage snapshots\n'
+              'codex-hub --version')
+        return
+    if mode == 'config':
+        hub_config.initialize(ROOT)
+        print(ROOT / 'config.json')
+        return
+    if mode == 'accounts':
+        account_command(args[1:])
+        return
+    if mode == 'usage':
+        os.execv(str(SELF.parent / 'codex-hub-usage'), [str(SELF.parent / 'codex-hub-usage'), *args[1:]])
+    if mode in ('sidebar', 'welcome', 'picker', 'manage', 'settings', 'chat'):
+        slot = args[1]
+        if slot not in LABELS:
+            raise ValueError('Unknown account')
+        classes = {'sidebar': Sidebar, 'welcome': Welcome, 'picker': Picker, 'manage': Manage, 'settings': Settings, 'chat': Chat}
+        curses.wrapper(lambda screen: classes[mode](screen, slot).run(*args[2:]))
+        return
+    if mode == 'account-login':
+        slot = args[2] if len(args) > 2 else args[1]
+        os.execvpe('codex', ['codex', 'login'], hub_config.environment(slot, ROOT))
+    if mode == 'setup':
+        hub_config.initialize(ROOT)
+        reload_config()
+        setup('--reload' in args)
+        if '--reload' not in args:
+            restore_chats()
+        return
+    setup()
+    if mode in ('attach', 'tui') or mode in LABELS:
+        restore_chats()
+    if mode == 'list':
+        for w in windows():
+            print(f"{w['session']} {w['id']} {w['name']} | {w['path']}")
+    elif mode in ('new', 'resume', 'cli'):
+        if len(args) < 2 or args[1] not in LABELS:
+            raise ValueError('Choose a configured account. Run codex-hub accounts list.')
+        new_chat(args[1], args[2] if len(args) > 2 else Path.cwd(),
+                 args[3] if len(args) > 3 else 'New chat', resume_picker=mode == 'resume', legacy=mode == 'cli')
+    elif mode in ('attach', 'tui') or mode in LABELS:
+        target = account_session(mode if mode in LABELS else CONFIG['defaultAccount'])
+        if os.environ.get('TMUX', '').split(',')[0] == str(SOCKET):
+            tmux('switch-client', '-t', target)
+        else:
+            os.execvp('tmux', ['tmux', '-S', str(SOCKET), 'attach-session', '-t', target])
+    else:
+        raise ValueError('Unknown command. Run codex-hub --help.')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f'Codex Hub: {error}', file=sys.stderr)
+        sys.exit(1)
