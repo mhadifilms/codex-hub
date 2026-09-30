@@ -199,6 +199,7 @@ class HubIntegration(unittest.TestCase):
             last = positions[-1]
             prefix = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\([AB0]', '', output[last.end():title])
             row, column = map(int, last.groups())
+            print('Popup target:', row, column, repr(prefix), x, y)
             self.click(x + column + len(prefix) - 3, y + row - 2)
         popup_click(6, 6)
         os.write(self.fd, str(self.project).encode())
@@ -235,7 +236,12 @@ class HubIntegration(unittest.TestCase):
         os.write(self.fd, b'\x15Renamed by mouse')
         time.sleep(.25)
         chat_popup_click(10, 8)
-        self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
+        try:
+            self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
+        except AssertionError:
+            print('Rename target:', newest['id'], [(w['id'], w['name']) for w in hub.windows()])
+            print('Popup input tail:', repr(type(self).output[-1800:]))
+            raise
         self.wait_for(lambda: 'Renamed by mouse' in self.sidebar_text('2'))
         type(self).output = b''
         chat_menu('Renamed by mouse')
