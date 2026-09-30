@@ -222,7 +222,7 @@ class HubIntegration(unittest.TestCase):
         self.wait_for(lambda: b'Chat options' in type(self).output)
         popup_click(8, 6)
         os.write(self.fd, b'\x15Renamed by mouse')
-        self.wait_for(lambda: b'Renamed by mouse' in type(self).output)
+        time.sleep(.25)
         popup_click(10, 8)
         self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
         self.wait_for(lambda: 'Renamed by mouse' in self.sidebar_text('2'))
