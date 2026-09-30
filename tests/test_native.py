@@ -192,6 +192,7 @@ class NativeIntegration(test_hub.HubIntegration):
         self.assertEqual(hub.tmux('show-option', '-wv', '-t', self.chat['id'], '@hub_version'), hub.hub_config.VERSION)
         self.click_text('A persistent draft')
         os.write(self.fd, b'\x15/permissions\n')
+        self.wait_for(lambda: 'Approval mode · next turn' in self.capture())
         self.click_text('Approve for me')
         self.wait_for(lambda: '◇ Approve for me' in self.capture())
         original_pid = hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_pid}')

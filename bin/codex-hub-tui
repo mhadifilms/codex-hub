@@ -1135,6 +1135,7 @@ class Chat(Surface):
 
     def choice(self, title, choices, dropdown=False):
         original_offset = self.offset
+        original_edit, self.edit = self.edit, None
         offset = 0
         while not self.stopping:
             if dropdown:
@@ -1161,9 +1162,11 @@ class Chat(Surface):
             offset = self.offset
             if action and action[0] == 'cancel':
                 self.offset = original_offset
+                self.edit = original_edit
                 return None
             if action and action[0] == 'pick':
                 self.offset = original_offset
+                self.edit = original_edit
                 return action[1]
 
     def edit_text(self, title, text='', button='Save'):
