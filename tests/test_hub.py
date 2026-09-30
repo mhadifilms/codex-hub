@@ -150,6 +150,7 @@ class HubIntegration(unittest.TestCase):
         self.assertEqual(invoked['cwd'], str(self.project))
         self.assertIsNone(invoked['api'])
         self.assertEqual(invoked['args'][:2], ['resume', '00000000-0000-0000-0000-000000000002'])
+        self.wait_for(lambda: any(w['kind'] == 'chat' and w['pane'] and w['sidebar'] for w in hub.windows()))
         resumed = next(w for w in hub.windows() if w['kind'] == 'chat')
         self.wait_for(lambda: self.account_window('2')['id'] == resumed['id'])
         original_pid = hub.tmux('display-message', '-p', '-t', resumed['pane'], '#{pane_pid}')
