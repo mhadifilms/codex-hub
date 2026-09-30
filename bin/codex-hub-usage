@@ -14,7 +14,7 @@ from pathlib import Path
 SELF = Path(__file__).resolve()
 LIB = SELF.parent.parent / 'lib'
 sys.path.insert(0, str(LIB if (LIB / 'hub_config.py').is_file() else SELF.parent.parent / 'share/codex-hub'))
-from hub_config import AUTH_ENV, ROOT, VERSION, home as account_home, load
+from hub_config import AUTH_ENV, ROOT, VERSION, executable, home as account_home, load
 
 
 def account_ids():
@@ -36,7 +36,7 @@ def read_account(account):
         env.pop(key, None)
 
     process = subprocess.Popen(
-        ["codex", "app-server", "--stdio"],
+        [executable(ROOT), "app-server", "--stdio"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

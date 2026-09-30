@@ -35,9 +35,15 @@ The default workspace uses your existing `~/.codex` home. If it is not signed in
 - **Scrolling:** wheel/trackpad movement, a draggable scrollbar, Page Up/Down and a jump-to-latest control. Reading position stays anchored while output streams or the terminal resizes; reaching the bottom resumes following.
 - **Persistence:** reopening the hub restores open enhanced chats, their drafts, selected models, and paused queues. Closing a chat marks its tab closed while retaining saved history.
 
+### After upgrading
+
+Existing chat processes keep running their original frontend until reconnected. The sidebar shows **↻ Update this chat** for an older frontend. Open its **···** menu and choose **Reload chat**, then confirm; stop active work first. Drafts, history and paused queues are retained. `codex-hub reload ACCOUNT` reconnects idle enhanced chats. `--force` confirms restarting a legacy frontend that cannot report its activity; busy current frontends are still refused. The running version appears above the conversation and in the sidebar.
+
+Use `codex-hub doctor` or `/status` to see the exact backend executable and version. If your terminal's PATH selects an older CLI, set `codexBinary` to the desired executable in the private JSON config, then reload idle chats. `CODEX_HUB_CODEX` is an optional environment override. Model choices come from that backend's catalog; catalog visibility alone does not verify inference access.
+
 Icons show explanatory labels on hover. The interface works in an 80-column terminal; ☰ collapses the sidebar to make more room.
 
-Slash commands include `/model`, `/approvals`, `/compact`, `/status`, `/new`, `/resume`, `/stop`, `/queue`, `/pin`, and `/help`. Suggestions appear while typing `/`. Press Enter to run a slash command; Enter in ordinary message text inserts a newline. CLI-specific slash commands fail explicitly and can be used through **Open in Codex CLI** in chat details.
+Slash commands include `/model`, `/approvals` (also `/permissions`), `/compact`, `/status`, `/new`, `/resume`, `/stop`, `/queue`, `/pin`, and `/help`. Suggestions appear while typing `/`. Press Enter to run a slash command; Enter in ordinary message text inserts a newline. CLI-specific slash commands fail explicitly and can be used through **Open in Codex CLI** in chat details.
 
 ## Configuration
 
@@ -68,7 +74,7 @@ The config is JSON, outside the repository:
 }
 ```
 
-Use any command-safe account ID and display label. `scrollLines` controls wheel sensitivity (1–20 lines per event). `--home /path/to/codex-home` reuses an existing home; otherwise Add creates a private isolated home. `accounts remove ID` removes the config entry only and refuses while that workspace's tmux session exists. Files, credentials and history are retained. Stop the relevant session before changing its home path manually.
+Use any command-safe account ID and display label. `scrollLines` controls wheel sensitivity (1–20 lines per event); Settings cycles through precise, normal and fast scrolling. Rapid wheel events are batched before repainting. `--home /path/to/codex-home` reuses an existing home; otherwise Add creates a private isolated home. `accounts remove ID` removes the config entry only and refuses while that workspace's tmux session exists. Files, credentials and history are retained. Stop the relevant session before changing its home path manually.
 
 Fresh installs store settings under `$XDG_CONFIG_HOME/codex-hub` or `~/.config/codex-hub`. Upgrades reuse `~/.codex-subs` when present. Set `CODEX_HUB_ROOT` to choose another state/config directory. Private settings and credentials never belong in the repository.
 

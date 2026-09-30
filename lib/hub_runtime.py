@@ -10,7 +10,7 @@ import threading
 import time
 from concurrent.futures import Future
 
-from hub_config import AUTH_ENV, ROOT, VERSION, environment, load
+from hub_config import AUTH_ENV, ROOT, VERSION, environment, executable, load
 
 APPROVAL_MODES = {
     'ask': {'approvalPolicy': 'on-request', 'approvalsReviewer': 'user', 'sandboxPolicy': {'type': 'workspaceWrite'}},
@@ -21,7 +21,8 @@ APPROVAL_MODES = {
 class Rpc:
     def __init__(self, slot, callback, root=ROOT):
         env = environment(slot, root)
-        self.process = subprocess.Popen(['codex', 'app-server', '--stdio'], env=env,
+        self.binary = executable(root)
+        self.process = subprocess.Popen([self.binary, 'app-server', '--stdio'], env=env,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.DEVNULL)
         self.pending, self.counter = {}, 0

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import sqlite3
@@ -119,9 +120,16 @@ class HubIntegration(unittest.TestCase):
     @classmethod
     def click(cls, x, y):
         # SGR mouse coordinates are one-based terminal coordinates.
+        # A real pointer moves between controls. Reset tmux's held-button state
+        # before pressing; older popup implementations otherwise send a drag.
+        os.write(cls.fd, f'\x1b[<35;{x};{y}M'.encode())
+        time.sleep(.05)
         os.write(cls.fd, f'\x1b[<0;{x};{y}M'.encode())
         time.sleep(.05)
         os.write(cls.fd, f'\x1b[<0;{x};{y}m'.encode())
+        # Give the frontend a frame to consume the release before typing or
+        # measuring another control; hosted runners can schedule it later.
+        time.sleep(.15)
         cls.pump()
 
     @classmethod
@@ -186,6 +194,16 @@ class HubIntegration(unittest.TestCase):
         # Centered popup is 119 x 34 with a one-cell border in a 140 x 40 terminal.
         def popup_click(x, y):
             self.click(x + 12, y + 4)
+        def chat_popup_click(x, y):
+            # Popup centering differs between tmux versions. Read the rendered
+            # title's cursor position rather than assuming a fixed top margin.
+            output = type(self).output.decode(errors='replace')
+            title = output.rfind('Chat options')
+            positions = list(re.finditer(r'\x1b\[(\d+);(\d+)H', output[:title]))
+            last = positions[-1]
+            prefix = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\([AB0]', '', output[last.end():title])
+            row, column = map(int, last.groups())
+            self.click(x + column + len(prefix) - 3, y + row - 2)
         popup_click(6, 6)
         os.write(self.fd, str(self.project).encode())
         popup_click(109, 6)  # Go
@@ -203,22 +221,32 @@ class HubIntegration(unittest.TestCase):
         self.wait_for(lambda: json.loads((self.root / '2/invoked.json').read_text())['cwd'] == str(created))
         self.assertEqual(hub.tmux('display-message', '-p', '-t', resumed['pane'], '#{pane_dead}'), '0')
         self.wait_for(lambda: self.account_window('2')['path'] == str(created))
+        self.wait_for(lambda: self.account_window('2')['pane'] and self.account_window('2')['sidebar'])
+        self.wait_for(lambda: 'Made by mouse' in self.sidebar_text('2') and 'New chat' in self.sidebar_text('2'))
         self.wait_for(lambda: 'No chats yet' not in self.sidebar_text('2'))
         newest = self.account_window('2')
+        def chat_menu(label):
+            capture = subprocess.run(['tmux', '-S', str(hub.SOCKET), 'capture-pane', '-p', '-t',
+                                      self.account_window('2')['sidebar']], text=True, capture_output=True, check=True).stdout
+            lines = capture.splitlines()
+            folder = next(i for i, line in enumerate(lines) if 'Made by mouse' in line)
+            row = next(i for i in range(folder + 1, len(lines)) if label in lines[i] and '···' in lines[i])
+            self.sidebar_click('2', lines[row].index('···') + 1, row)
         type(self).output = b''
-        self.sidebar_click('2', 32, 16)
+        chat_menu('New chat')
         self.wait_for(lambda: b'Chat options' in type(self).output)
-        popup_click(8, 6)
+        chat_popup_click(8, 6)
         os.write(self.fd, b'\x15Renamed by mouse')
-        popup_click(10, 8)
+        time.sleep(.25)
+        chat_popup_click(10, 8)
         self.wait_for(lambda: any(w['id'] == newest['id'] and w['name'] == 'Renamed by mouse' for w in hub.windows()))
         self.wait_for(lambda: 'Renamed by mouse' in self.sidebar_text('2'))
         type(self).output = b''
-        self.sidebar_click('2', 32, 16)
+        chat_menu('Renamed by mouse')
         self.wait_for(lambda: b'Chat options' in type(self).output)
-        popup_click(12, 13)
+        chat_popup_click(12, 13)
         self.wait_for(lambda: b'Confirm close' in type(self).output)
-        popup_click(12, 13)
+        chat_popup_click(12, 13)
         self.wait_for(lambda: all(w['id'] != newest['id'] for w in hub.windows()))
         self.assertEqual(hub.tmux('display-message', '-p', '-t', resumed['pane'], '#{pane_dead}'), '0')
         # The home composer sends its text to the selected account and project.

@@ -8,6 +8,10 @@ import sys
 import threading
 import time
 
+if '--version' in sys.argv:
+    print('codex-cli fixture')
+    raise SystemExit(0)
+
 home = Path(os.environ['CODEX_HOME'])
 lock = threading.Lock()
 thread = {'id': 'fixture-' + str(os.getpid()), 'cwd': os.getcwd(), 'name': '', 'turns': []}

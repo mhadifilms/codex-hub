@@ -16,6 +16,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 
 REPO = Path(__file__).resolve().parents[1]
+VERSION = (REPO / 'VERSION').read_text().strip()
 sys.path.insert(0, str(REPO / 'tests'))
 import test_native
 from test_hub import hub
@@ -85,7 +86,7 @@ def main():
                 Demo.pump()
                 picture = Image.new('RGB', (1480, 1200), '#101010')
                 draw = ImageDraw.Draw(picture)
-                draw.text((40, 17), 'Codex Hub  0.1.0', font=fonts[1], fill='#ececec')
+                draw.text((40, 17), 'Codex Hub  ' + VERSION, font=fonts[1], fill='#ececec')
                 draw.text((1090, 17), 'Native terminal workspace', font=fonts[0], fill='#a5a5a5')
                 for pane, background in ((Demo.chat['sidebar'], 234), (Demo.chat['pane'], 233)):
                     x, y, w, h = map(int, hub.tmux('display-message', '-p', '-t', pane, '#{pane_left} #{pane_top} #{pane_width} #{pane_height}').split())
