@@ -50,6 +50,18 @@ class HubIntegration(unittest.TestCase):
         os.environ['OPENAI_API_KEY'] = 'test-key-must-not-reach-codex'
         os.environ['TERM'] = 'xterm-256color'
         os.environ.pop('TMUX', None)
+        diagnostic = cls.root / 'diagnostic'
+        diagnostic.mkdir()
+        (diagnostic / 'sitecustomize.py').write_text(
+            'import sys,os,curses\nfrom pathlib import Path\n'
+            'if len(sys.argv)>1 and sys.argv[1]=="manage":\n'
+            ' original=curses.getmouse\n'
+            ' def observed():\n'
+            '  value=original()\n'
+            '  with (Path(os.environ["CODEX_HUB_ROOT"])/"mouse.log").open("a") as log: log.write(repr(value)+"\\n")\n'
+            '  return value\n'
+            ' curses.getmouse=observed\n')
+        os.environ['PYTHONPATH'] = str(diagnostic)
         config = {'schemaVersion': 1, 'defaultAccount': '1', 'accounts': {slot: {'label': label, 'description': 'Demo workspace', 'home': str(cls.root / slot), 'session': 'codex-sub-' + slot} for slot, label in getattr(cls, 'FIXTURE_LABELS', [('1', 'One'), ('2', 'Two'), ('3', 'Three')])}}
         (cls.root / 'config.json').write_text(json.dumps(config))
         hub.reload_config()
@@ -241,6 +253,8 @@ class HubIntegration(unittest.TestCase):
         except AssertionError:
             print('Rename target:', newest['id'], [(w['id'], w['name']) for w in hub.windows()])
             print('Popup input tail:', repr(type(self).output[-1800:]))
+            print('Popup mouse events:', (self.root / 'mouse.log').read_text() if (self.root / 'mouse.log').exists() else 'none')
+            print('Popup initial output:', repr(type(self).output[:2400]))
             raise
         self.wait_for(lambda: 'Renamed by mouse' in self.sidebar_text('2'))
         type(self).output = b''
