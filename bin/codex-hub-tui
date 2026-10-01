@@ -722,9 +722,12 @@ class Surface:
         original_edit, self.edit = self.edit, None
         original_offset, hits = self.offset, self.hits
         self.context_active = True
-        # Menus have click targets only; allow curses to combine a quick
-        # press/release even when the menu redraws between the two events.
-        curses.mouseinterval(100)
+        # Receive unmatched releases too: tmux 3.4 may drop the first press
+        # when changing buttons. Curses click synthesis discards that release.
+        _, original_mask = curses.mousemask(curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED |
+                                            curses.BUTTON3_PRESSED | curses.BUTTON3_RELEASED |
+                                            getattr(curses, 'REPORT_MOUSE_POSITION', 0))
+        curses.mouseinterval(0)
         try:
             while True:
                 self.offset = original_offset
@@ -744,6 +747,7 @@ class Surface:
                 if action and action[0] in ('cancel', 'context-menu'):
                     return None
         finally:
+            curses.mousemask(original_mask)
             curses.mouseinterval(25)
             self.context_active = False
             self.offset, self.edit, self.hits = original_offset, original_edit, hits
