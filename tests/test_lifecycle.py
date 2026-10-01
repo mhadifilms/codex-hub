@@ -77,7 +77,12 @@ class Lifecycle(test_native.NativeIntegration):
         self.assertEqual(hub.state()['chats']['1'][ident], before)
         self.sidebar_action('Lifecycle review', right=True)
         self.sidebar_action('Pin chat')
-        self.wait_for(lambda: ident in hub.state().get('pins',{}).get('1',[]))
+        try:
+            self.wait_for(lambda: ident in hub.state().get('pins',{}).get('1',[]))
+        except AssertionError:
+            print(hub.tmux('list-panes','-t',self.chat['id'],'-F','#{pane_id} mode=#{pane_in_mode} mouse=#{mouse_any_flag}'))
+            print(hub.tmux('list-keys','-T','root'))
+            raise
         self.sidebar_action('Lifecycle review', right=True)
         self.sidebar_action('Archive chat')
         self.wait_for(lambda: all(w['id']!=current['id'] for w in hub.windows()))
