@@ -634,7 +634,11 @@ class Surface:
                     self.pressed = hit
                 clicked = button & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED)
                 if button & curses.BUTTON1_RELEASED:
-                    clicked = hit is not None and hit == self.pressed
+                    # tmux 3.4 can suppress the first left press immediately
+                    # after a right click. A menu release still selects its
+                    # target; editable fields retain their drag tracking.
+                    clicked = hit is not None and (hit == self.pressed or
+                              getattr(self, 'context_active', False) and self.pressed is None)
                     self.pressed = None
                 if clicked and hit:
                     if hit[0] == 'field':
