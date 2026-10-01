@@ -47,16 +47,20 @@ class NativeIntegration(test_hub.HubIntegration):
 
     @classmethod
     def click_text(cls, label):
+        position = None
+        def locate():
+            nonlocal position
+            for y, line in enumerate(cls.capture().splitlines()):
+                if label in line:
+                    position = (line.index(label) + 1, y)
+                    return True
+            return False
         try:
-            cls.wait_for(lambda: label in cls.capture())
+            cls.wait_for(locate)
         except AssertionError:
             print('CHAT CAPTURE:', cls.capture())
             raise
-        for y, line in enumerate(cls.capture().splitlines()):
-            if label in line:
-                cls.chat_click(line.index(label) + 1, y)
-                return
-        raise AssertionError(label)
+        cls.chat_click(*position)
 
     @classmethod
     def rpc(cls):
@@ -134,8 +138,8 @@ class NativeIntegration(test_hub.HubIntegration):
         self.click_text('▧ 1')
         self.click_text('sample.png')
         self.click_text('Preview')
-        self.wait_for(lambda: 'terminal thumbnail' in self.capture())
-        self.click_text('Back')
+        self.wait_for(lambda: (self.root / '1/opened.json').exists() and json.loads((self.root / '1/opened.json').read_text()) == [str(sample)])
+        self.assertNotIn('terminal thumbnail', self.capture())
         self.click_text('↑')
         self.wait_for(lambda: any(m['images'] for m in json.loads(saved.read_text())['queues']['1:' + ident]))
         # Capture fixture terminal for visual review if requested by caller.
@@ -187,13 +191,14 @@ class NativeIntegration(test_hub.HubIntegration):
         self.wait_for(lambda: hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_width} #{pane_height}') == '103 39')
         self.wait_for(lambda: 'A persistent draft' in self.capture())
         self.wait_for(lambda: 'Connecting' not in self.capture())
+        # Restored transcript text can paint before the backend finishes reconnecting.
+        self.wait_for(lambda: next(w for w in hub.windows() if w['id'] == self.chat['id'])['busy'] == '0')
         self.wait_for(lambda: 'Thinking' in self.capture())
         self.assertTrue(json.loads(saved.read_text())['paused']['1:' + ident])
         self.click_text('Thinking')
         self.wait_for(lambda: 'Checking the project structure' in self.capture())
         self.click_text('Thinking')
         # Reconnect this same completed chat to the upgraded frontend.
-        self.wait_for(lambda: next(w for w in hub.windows() if w['id'] == self.chat['id'])['busy'] == '0')
         before_reload = hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_pid}')
         hub.reload_chat(next(w for w in hub.windows() if w['id'] == self.chat['id']))
         self.wait_for(lambda: 'A persistent draft' in self.capture() and 'Connecting' not in self.capture())

@@ -113,6 +113,32 @@ class HubTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.act('steer', text='new model', model='different', effort='high')
 
+    def test_queued_steering_removes_only_confirmed_messages(self):
+        self.send('first')
+        self.send('queued one')
+        self.send('queued two')
+        queued = self.hub.thread('1', self.ident)['queue']
+        self.act('steerQueue', id=queued[1]['id'])
+        self.assertEqual(self.hub.clients['1'].calls[-1][0], 'turn/steer')
+        self.assertEqual(self.hub.clients['1'].calls[-1][1]['input'][0]['text'], 'queued two')
+        self.assertEqual([m['text'] for m in self.hub.thread('1', self.ident)['queue']], ['queued one'])
+        self.send('queued three')
+        self.act('steerQueue')
+        self.assertEqual(self.hub.clients['1'].calls[-1][1]['input'][0]['text'], 'queued one\n\nqueued three')
+        self.assertEqual(self.hub.thread('1', self.ident)['queue'], [])
+
+    def test_uncertain_queued_steering_does_not_replay(self):
+        self.send('first')
+        self.send('keep me')
+        self.hub.clients['1'].fail = True
+        with self.assertRaises(RuntimeError):
+            self.act('steerQueue')
+        self.hub.clients['1'].fail = False
+        self.complete()
+        self.assertTrue(self.hub.thread('1', self.ident)['paused'])
+        self.assertEqual([m['text'] for m in self.hub.thread('1', self.ident)['queue']], ['keep me'])
+        self.assertEqual(len([m for m, _ in self.hub.clients['1'].calls if m == 'turn/start']), 1)
+
     def test_account_isolation(self):
         second = self.hub.action({'action': 'new', 'slot': '2', 'cwd': str(self.root)})['threadId']
         self.send('account one')
