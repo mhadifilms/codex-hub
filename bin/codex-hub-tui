@@ -704,43 +704,34 @@ class Surface:
              '-t', os.environ['TMUX_PANE'], '-T', ' Codex ', command(mode, self.slot, *args))
 
     def context_menu(self, choices, x, y):
-        """Mouse menu anchored to the clicked object, with outside-click dismissal."""
-        background, hits = curses.newwin(*self.screen.getmaxyx(), 0, 0), self.hits
-        self.screen.overwrite(background)
+        """Use the normal redraw loop for an anchored mouse menu."""
+        redraw = getattr(self, 'draw_chat', None) or getattr(self, 'draw', None)
+        if not redraw:
+            return None
         original_edit, self.edit = self.edit, None
+        original_offset, hits = self.offset, self.hits
         self.context_active = True
         try:
             while True:
+                self.offset = original_offset
+                redraw()
+                hits, self.hits = self.hits, []
                 h, w = self.screen.getmaxyx()
                 if w < 6 or h < len(choices) + 2:
                     return None
                 width = min(w - 2, max(len(label) for label, _ in choices) + 4)
                 left, top = max(0, min(x, w - width - 1)), max(0, min(y, h - len(choices) - 2))
-                background.overwrite(self.screen)
-                self.hits = []
                 self.panel(top, left, width, len(choices) + 2)
                 for row, (label, value) in enumerate(choices, top + 1):
-                    self.button(row, left + 1, width - 2, label, ('pick', value), align='left')
+                    self.button(row, left + 1, width - 2, label, ('pick', value), quiet=True, align='left')
                 action = self.event()
                 if action and action[0] == 'pick':
                     return action[1]
-                if action == ('resize',):
-                    # Reflow against the actual pane; tmux may resize it after
-                    # toggling the sidebar or selecting a different pane.
-                    redraw = getattr(self, 'draw_chat', None) or getattr(self, 'draw', None)
-                    if not redraw:
-                        return None
-                    redraw()
-                    hits = self.hits
-                    background = curses.newwin(*self.screen.getmaxyx(), 0, 0)
-                    self.screen.overwrite(background)
-                    self.pressed = None
-                    continue
                 if action and action[0] in ('cancel', 'context-menu'):
                     return None
         finally:
             self.context_active = False
-            self.edit, self.hits = original_edit, hits
+            self.offset, self.edit, self.hits = original_offset, original_edit, hits
 
     def error(self, error):
         self.message = (error.stderr.strip().splitlines()[-1] if isinstance(error, subprocess.CalledProcessError)
