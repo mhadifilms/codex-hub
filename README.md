@@ -19,11 +19,11 @@ Requires Python **3.10+**, tmux **3.2+**, Codex CLI **0.159+**, and a terminal w
 
 ```sh
 brew install mhadifilms/codex-hub/codex-hub
-# If Codex CLI is not installed:
-brew install --cask codex
 codex login
 codex-hub
 ```
+
+If Codex CLI is missing, use `brew install --cask codex` on macOS, or `npm install --global @openai/codex` on Linux (requires Node.js).
 
 ### From source · macOS and Linux
 
