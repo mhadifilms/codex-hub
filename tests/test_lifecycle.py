@@ -10,6 +10,21 @@ from test_hub import hub
 
 class Lifecycle(test_native.NativeIntegration):
     @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        hub.tmux('set-environment', '-g', 'HUB_TEST_MOUSE_TRACE', '1')
+        hub.setup(reload=True)
+
+    @classmethod
+    def wait_for(cls, predicate, timeout=8):
+        try:
+            super().wait_for(predicate, timeout)
+        except AssertionError:
+            if (cls.root/'mouse-test.jsonl').exists():
+                print((cls.root/'mouse-test.jsonl').read_text()[-6000:])
+            raise
+
+    @classmethod
     def sidebar_action(cls, label, right=False):
         position = None
         def locate():
