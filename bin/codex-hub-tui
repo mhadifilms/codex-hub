@@ -388,7 +388,7 @@ class Surface:
         screen.keypad(True)
         screen.timeout(600)
         curses.curs_set(0)
-        curses.mouseinterval(0)
+        curses.mouseinterval(100)
         curses.mousemask(curses.ALL_MOUSE_EVENTS | getattr(curses, 'REPORT_MOUSE_POSITION', 0))
         if curses.has_colors():
             curses.start_color()
