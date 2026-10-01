@@ -578,9 +578,6 @@ class Surface:
                 hit = next((action for top, left, height, width, action in reversed(self.hits)
                             if top <= y < top + height and left <= x < left + width), None)
                 self.hover = hit
-                if os.environ.get('HUB_TEST_MOUSE_TRACE'):
-                    with (ROOT / 'mouse-test.jsonl').open('a') as trace:
-                        trace.write(json.dumps({'x': x, 'y': y, 'button': button, 'hit': hit[0] if hit else None, 'pressed': self.pressed[0] if self.pressed else None, 'menu': getattr(self, 'context_active', False)}) + '\n')
                 if button & (curses.BUTTON3_PRESSED | curses.BUTTON3_CLICKED):
                     self.pressed = None
                     return ('context-menu', hit, x, y)
