@@ -25,13 +25,13 @@ The default workspace uses your existing `~/.codex` home. If it is not signed in
 
 - **Projects and chats:** click Add project to browse or create folders. Each account has its own project list and searchable chat sidebar. New chats appear first; untouched empty chats stay out of saved history. Repeated New chat reuses an empty pane. Close a tab with × or its ··· menu; saved content is retained.
 - **Native Markdown:** headings, bold/italic text, lists, quotes, tables, inline code and highlighted code blocks render directly in the terminal. Links are clickable.
-- **Composer:** type multiline messages, attach images, choose a model and reasoning effort, and click ↑ to send. Click within text to place the caret, or drag to select and replace text. While a turn runs, ■ replaces Send when the composer is empty; while typing it sits to the left of ↑. ↑ queues the message; ↳ steers the active turn.
-- **Queues:** click ≡ to edit or remove pending messages. Interrupted, failed, or recovered queues pause for review before resuming.
+- **Composer:** type multiline messages, attach images, choose a model and reasoning effort, and press Enter or click ↑ to send. Double Enter sends the queue into the active turn, or starts it when idle. Use ↵ or Alt+Enter for a newline; Shift+Enter also works when the terminal reports a distinct key sequence. Multiline bracketed paste stays in the draft until explicitly sent. Click within text to place the caret, or drag to select and replace text. While a turn runs, ■ replaces Send when the composer is empty; while typing it sits to the left of ↑. ↑ queues the message; ↳ steers the active turn.
+- **Queues:** messages stack above the composer with per-message ↳ Steer, ⌫ delete and ··· edit/options controls. Double Enter dispatches the queued messages together; click a row’s Steer to dispatch only that message. Click ≡ to review all pending messages. Interrupted, failed, or recovered queues pause for review before resuming.
 - **Permissions:** the ◇ dropdown selects explicit approvals, automatic risk review, or full access for the next turn. Full access grants unrestricted file/network access without approval prompts.
 - **Context:** hover ◔ to see reported context usage and compaction status. Click it, or use `/compact`, to compact an idle chat.
 - **Activity:** thinking and tool calls stay visible and expandable after a turn finishes. User messages have distinct, bright bubbles.
 - **Selection:** drag across transcript text to highlight and copy it. Drag within the composer selects editable text; ⧉ copies that selection when present. ▣ enters tmux text selection mode. Drag to select/copy; ⧉ copies the latest response. Clipboard integration uses the terminal, `pbcopy`, `wl-copy`, or `xclip` where available. Shift-drag may also select directly in your terminal emulator.
-- **Images:** + browses local image files. Attachments have terminal thumbnails and a full-resolution system preview.
+- **Images:** + browses local image files. Image preview and linked images open the original file directly in the system viewer, at full resolution. No terminal thumbnail conversion is performed.
 - **Scrolling:** wheel/trackpad movement, a draggable scrollbar, Page Up/Down and a jump-to-latest control. Reading position stays anchored while output streams or the terminal resizes; reaching the bottom resumes following.
 - **Usage:** the bottom-left sidebar shows session and weekly percentages remaining. Read-only snapshots refresh in the background about once a minute while the account is visible; failures retain the last verified values and show a warning marker. Hover for verification time.
 - **Exit:** click ⏻ Exit in the sidebar or ⏻ in the chat header. The UI detaches while chats keep running; reopen `codex-hub` to return.
@@ -45,7 +45,7 @@ Use `codex-hub doctor` or `/status` to see the exact backend executable and vers
 
 Icons show explanatory labels on hover. The interface works in an 80-column terminal; ☰ collapses the sidebar to make more room.
 
-Slash commands include `/model`, `/approvals` (also `/permissions`), `/compact`, `/status`, `/new`, `/resume`, `/stop`, `/queue`, `/pin`, and `/help`. Suggestions appear while typing `/`. Press Enter to run a slash command; Enter in ordinary message text inserts a newline. CLI-specific slash commands fail explicitly and can be used through **Open in Codex CLI** in chat details.
+Slash commands include `/model`, `/approvals` (also `/permissions`), `/compact`, `/status`, `/new`, `/resume`, `/stop`, `/queue`, `/pin`, and `/help`. Suggestions appear while typing `/`. Press Enter to run a slash command; Enter in ordinary message text sends or queues it. CLI-specific slash commands fail explicitly and can be used through **Open in Codex CLI** in chat details.
 
 ## Configuration
 
@@ -96,7 +96,7 @@ codex-hub --version
 
 Codex Hub connects to the installed Codex app-server through stdin/stdout. There is no browser UI or localhost server. Available models and protocol behavior follow your installed CLI and account. Version 0.1.0 was checked against Codex CLI 0.146.0; behavioral tests use a deterministic local backend rather than live inference.
 
-The terminal owns fonts and line spacing. Thumbnails use terminal cells; full-resolution previews use Quick Look on macOS or the system viewer on Linux. Desktop voice, embedded browser/editor panels, clipboard-image paste, and desktop-only plugins are not supported. Client interactions outside supported chat, approval and question requests fail explicitly with a stock CLI fallback. Pins and display names are local to the hub.
+The terminal owns fonts and line spacing. Images open in the system viewer using the original file. The TUI does not convert images into colored terminal cells. Desktop voice, embedded browser/editor panels, clipboard-image paste, and desktop-only plugins are not supported. Client interactions outside supported chat, approval and question requests fail explicitly with a stock CLI fallback. Pins and display names are local to the hub.
 
 ## Development
 

@@ -353,6 +353,36 @@ class Hub:
                 inputs = [{'type': 'text', 'text': message['text']}] if message['text'] else []
                 inputs += [{'type': 'localImage', 'path': p} for p in message['images']]
                 self.client(slot).call('turn/steer', {'threadId': ident, 'expectedTurnId': self.active[key], 'input': inputs})
+            elif action == 'steerQueue':
+                pending = self.saved.setdefault('queues', {}).setdefault(key, [])
+                messages = [m for m in pending if not data.get('id') or m['id'] == data['id']]
+                if not messages:
+                    return
+                view = self.view(slot, ident)
+                first = messages[0]
+                settings = ('model', 'effort', 'approvalMode')
+                if any(any(m.get(field) != first.get(field) for field in settings) for m in messages):
+                    raise ValueError('Queued messages use different settings. Steer them separately or let them run in order.')
+                combined = {**first, 'text': '\n\n'.join(m['text'] for m in messages if m['text']),
+                            'images': [image for m in messages for image in m['images']]}
+                if key in self.active and any(first.get(field) != view.get('_' + field, 'ask' if field == 'approvalMode' else None) for field in settings):
+                    raise ValueError('Model or approval changes need a new turn. Leave these messages queued until the current turn finishes.')
+                try:
+                    if key in self.active:
+                        inputs = [{'type': 'text', 'text': combined['text']}] if combined['text'] else []
+                        inputs += [{'type': 'localImage', 'path': path} for path in combined['images']]
+                        self.client(slot).call('turn/steer', {'threadId': ident, 'expectedTurnId': self.active[key], 'input': inputs})
+                    else:
+                        self.launch(slot, ident, combined)
+                except Exception as error:
+                    self.saved.setdefault('paused', {})[key] = True
+                    self.errors[key] = 'Dispatch could not be confirmed. Queue retained and paused; check the conversation before retrying: ' + str(error)
+                    self.persist()
+                    raise
+                sent = {m['id'] for m in messages}
+                pending[:] = [m for m in pending if m['id'] not in sent]
+                self.errors.pop(key, None)
+                self.persist()
             elif action == 'compact':
                 if key in self.active:
                     raise ValueError('Stop the active turn before compacting this chat.')

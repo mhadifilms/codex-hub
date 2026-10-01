@@ -134,8 +134,8 @@ class NativeIntegration(test_hub.HubIntegration):
         self.click_text('▧ 1')
         self.click_text('sample.png')
         self.click_text('Preview')
-        self.wait_for(lambda: 'terminal thumbnail' in self.capture())
-        self.click_text('Back')
+        self.wait_for(lambda: (self.root / '1/opened.json').exists() and json.loads((self.root / '1/opened.json').read_text()) == [str(sample)])
+        self.assertNotIn('terminal thumbnail', self.capture())
         self.click_text('↑')
         self.wait_for(lambda: any(m['images'] for m in json.loads(saved.read_text())['queues']['1:' + ident]))
         # Capture fixture terminal for visual review if requested by caller.

@@ -470,6 +470,36 @@ class Surface:
             key = self.screen.get_wch()
         except curses.error:
             return None
+        newline = False
+        if key == '\x1b' and getattr(self, 'enter_sends', False):
+            sequences = {'\r': 'newline', '\n': 'newline', '[13;2u': 'newline', '[27;2;13~': 'newline', '[200~': 'paste-start', '[201~': 'paste-end'}
+            collected = ''
+            self.screen.timeout(20)
+            try:
+                while any(sequence.startswith(collected) for sequence in sequences):
+                    try:
+                        char = self.screen.get_wch()
+                    except curses.error:
+                        break
+                    if not isinstance(char, str):
+                        curses.unget_wch(char)
+                        break
+                    collected += char
+                    if collected in sequences:
+                        break
+            finally:
+                self.screen.timeout(150)
+            kind = sequences.get(collected)
+            if kind == 'newline':
+                key, newline = '\n', True
+            elif kind in ('paste-start', 'paste-end'):
+                self.pasting = kind == 'paste-start'
+                return None
+            else:
+                for char in reversed(collected):
+                    curses.unget_wch(char)
+        if self.edit == 'prompt' and key in ('\n', '\r') and getattr(self, 'enter_sends', False) and not getattr(self, 'modal_edit', False) and not getattr(self, 'pasting', False) and not newline:
+            return ('enter',)
         if key == curses.KEY_MOUSE:
             try:
                 _, x, y, _, button = curses.getmouse()
@@ -1191,6 +1221,9 @@ class Chat(Surface):
         self.text(2, left, 'Local · ' + Path(self.path).name + ' · Hub ' + hub_config.VERSION, 2, width)
         self.divider(3, left, width)
         bottom = h - 10
+        queue = self.snapshot.get('queue', [])
+        queue_height = min(len(queue), max(1, min(6, h - 19)))
+        transcript_bottom = bottom - queue_height - (1 if queue_height else 0)
         previous_keys = getattr(self, 'row_keys', [])
         anchor = previous_keys[min(self.offset, len(previous_keys) - 1)] if previous_keys and not self.follow else None
         previous_width = getattr(self, 'transcript_width', width)
@@ -1203,7 +1236,7 @@ class Chat(Surface):
             if matches:
                 self.offset = min(matches, key=lambda match: abs(match[1] - index))[0]
         self.transcript_width = width
-        available = max(1, bottom - 5)
+        available = max(1, transcript_bottom - 5)
         self.visible_lines = available
         self.max_scroll = max(0, len(lines) - available)
         if self.follow:
@@ -1220,7 +1253,7 @@ class Chat(Surface):
                 self.hits.append((y, left, 1, width, action))
         if self.text_selection:
             (first_y, first_x), (last_y, last_x) = sorted(self.text_selection)
-            for y in range(max(5, first_y), min(bottom, last_y + 1)):
+            for y in range(max(5, first_y), min(transcript_bottom, last_y + 1)):
                 start = max(left, first_x if y == first_y else left)
                 stop = min(left + width, last_x if y == last_y else left + width)
                 if stop > start:
@@ -1238,7 +1271,18 @@ class Chat(Surface):
         if not lines:
             self.text(max(5, bottom // 2), left, 'What are we working on?', bold=True)
         if not self.follow:
-            self.button(bottom - 1, left + width - 6, 5, '↓', ('latest',), True)
+            self.button(transcript_bottom - 1, left + width - 6, 5, '↓', ('latest',), True)
+        visible_queue = queue[-queue_height:] if queue_height else []
+        for y, entry in enumerate(visible_queue, transcript_bottom + 1):
+            wide = width >= 65
+            control_width = 19 if wide else 14
+            label = ' '.join(entry['text'].split()) or 'Image attachment'
+            self.text(y, left, ' ' * width, 7, width)
+            self.text(y, left + 1, '↳', 2, 2)
+            self.button(y, left + 3, width - control_width - 3, label, ('queue-edit', entry['id']), quiet=False, align='left')
+            self.button(y, left + width - control_width, 8 if wide else 3, '↳ Steer' if wide else '↳', ('steer-queue', entry['id']), quiet=False)
+            self.button(y, left + width - 8, 3, '⌫', ('queue-delete', entry['id']), quiet=False)
+            self.button(y, left + width - 4, 3, '···', ('queue-menu', entry['id']), quiet=False)
         count = len(self.snapshot.get('queue', []))
         requests = len(self.snapshot.get('requests', []))
         self.button(bottom, left, 7, '≡ ' + str(count), ('queue',), selected=bool(count))
@@ -1250,7 +1294,8 @@ class Chat(Surface):
         mode_label = {'ask': 'Ask approval', 'auto': 'Approve for me', 'full': 'Full access'}[self.approval_mode]
         self.button(bottom, left + width - 19, 19, '◇ ' + mode_label + ' ▾', ('approval-mode',), quiet=True)
         self.panel(bottom + 1, left, width, 5)
-        self.field('prompt', bottom + 2, left + 1, width - 2, 'Message Codex…', height=3)
+        self.field('prompt', bottom + 2, left + 1, width - 7, 'Message Codex…', height=3)
+        self.button(bottom + 4, left + width - 5, 3, '↵', ('newline',), quiet=True)
         composing = bool(self.fields.get('prompt', '').strip() or self.images)
         active_composer = bool(self.snapshot.get('active') and composing)
         model_width = min(25, max(8, width - (30 if active_composer else 25)))
@@ -1267,7 +1312,7 @@ class Chat(Surface):
         if composing or not self.snapshot.get('active'):
             self.button(h - 3, left + width - 6, 5, '↑', ('send',), True)
         hints = {'sidebar': 'Toggle sidebar', 'select': 'Select text · drag in tmux selection mode', 'copy': 'Copy latest response',
-                 'details': 'Chat details', 'close': 'Close this chat', 'exit': 'Exit Hub · work keeps running', 'latest': 'Jump to latest response', 'queue': 'Review queued messages', 'attach': 'Attach image', 'images': 'Preview attached images',
+                 'details': 'Chat details', 'close': 'Close this chat', 'exit': 'Exit Hub · work keeps running', 'latest': 'Jump to latest response', 'queue': 'Review all queued messages', 'queue-edit': 'Edit queued message', 'queue-delete': 'Delete queued message', 'queue-menu': 'Queued message options', 'steer-queue': 'Send queued message into the active turn', 'newline': 'Insert newline · Alt+Enter; Shift+Enter when supported', 'attach': 'Attach image', 'images': 'Preview attached images',
                  'approval-mode': 'Approval mode · applies next turn', 'steer': 'Send now · steer current turn', 'stop': 'Stop current turn', 'send': 'Queue message' if self.snapshot.get('active') else 'Send message'}
         hover_help = hints.get(self.hover[0], '') if self.hover else ''
         self.text(h - 1, 1, self.message or self.snapshot.get('error') or ('Connecting…' if not self.ready else 'Queue paused · click ≡ to review and resume' if self.snapshot.get('paused') and count else hover_help), 6 if self.message or self.snapshot.get('error') else 2, w - 2)
@@ -1309,12 +1354,27 @@ class Chat(Surface):
                 '/help': 'Available commands'}
 
     def event(self):
-        before = self.fields.get('prompt', '')
         action = super().event()
-        if self.edit == 'prompt' and before.startswith('/') and self.fields.get('prompt') == before + '\n':
-            self.fields['prompt'] = before
-            return ('slash', before)
-        return action
+        if action != ('enter',):
+            return action
+        now = time.monotonic()
+        double = now - self.last_enter < .8
+        self.last_enter = now
+        text = self.fields.get('prompt', '')
+        if text.startswith('/'):
+            return ('slash', text)
+        if self.pending:
+            if double and self.pending_action == 'send' and (text, self.images) == self.submitted:
+                self.steer_after_send = True
+            return None
+        if text.strip() or self.images:
+            return ('send',)
+        if double and self.snapshot.get('queue'):
+            if self.snapshot.get('error'):
+                self.message = 'Review the paused queue before retrying an unconfirmed dispatch.'
+                return None
+            return ('steer-queue', None)
+        return None
 
     def handle_slash(self, text):
         command = text.strip()
@@ -1392,6 +1452,8 @@ class Chat(Surface):
                 return action[1]
 
     def edit_text(self, title, text='', button='Save'):
+        original_modal = getattr(self, 'modal_edit', False)
+        self.modal_edit = True
         original = dict(self.fields)
         original_edit = self.edit
         original_cursors = dict(self.cursors)
@@ -1412,6 +1474,7 @@ class Chat(Surface):
                 break
         self.fields, self.edit, self.cursors = original, original_edit, original_cursors
         self.field_selection = original_selection
+        self.modal_edit = original_modal
         return result
 
     def image_picker(self):
@@ -1454,53 +1517,10 @@ class Chat(Surface):
         if not path.is_absolute():
             path = Path(self.path) / path
         path = path.resolve()
-        try:
-            from PIL import Image, ImageOps
-            with Image.open(path) as source:
-                original = ImageOps.exif_transpose(source).convert('RGB')
-        except ImportError:
-            original = None
-        while not self.stopping:
-            h, w = self.begin()
-            self.text(1, 2, path.name, bold=True)
-            if original:
-                thumb = original.copy()
-                thumb.thumbnail((max(2, min(90, w - 6)), max(2, (h - 8) * 2)))
-                x0 = max(2, (w - thumb.width) // 2)
-                pixels = thumb.load()
-                for y in range(0, thumb.height, 2):
-                    for x in range(thumb.width):
-                        upper = pixels[x, y]
-                        lower = pixels[x, min(y + 1, thumb.height - 1)]
-                        def quant(rgb):
-                            return 16 + 36 * round(rgb[0] / 51) + 6 * round(rgb[1] / 51) + round(rgb[2] / 51)
-                        fg, bg = quant(upper), quant(lower)
-                        pair = (fg, bg)
-                        if curses.COLORS >= 256 and curses.COLOR_PAIRS > 32:
-                            if pair not in self.palette and len(self.palette) < curses.COLOR_PAIRS - 20:
-                                code = len(self.palette) + 20
-                                curses.init_pair(code, fg, bg)
-                                self.palette[pair] = code
-                            attr = curses.color_pair(self.palette.get(pair, 1))
-                        else:
-                            attr = curses.color_pair(1)
-                        try:
-                            self.screen.addstr(3 + y // 2, x0 + x, '▀', attr)
-                        except curses.error:
-                            pass
-                self.text(h - 4, 2, f'{original.width} × {original.height} · terminal thumbnail', 2)
-            else:
-                self.text(5, 3, 'Install Pillow for terminal thumbnails; full-resolution preview is available.', 2, w - 6)
-            self.button(h - 2, 2, 10, 'Back', ('cancel',))
-            self.button(h - 2, max(14, w - 24), 22, 'Full resolution', ('full',))
-            action = self.event()
-            if action == ('cancel',):
-                return
-            if action == ('full',):
-                if sys.platform == 'darwin' and shutil.which('qlmanage'):
-                    subprocess.Popen(['qlmanage', '-p', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    self.open_external(str(path))
+        if not path.is_file():
+            raise ValueError('Image file is unavailable.')
+        self.open_external(str(path))
+        self.message = 'Opened original image in the system viewer.'
 
     def open_external(self, value, text=False):
         opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
@@ -1630,11 +1650,15 @@ class Chat(Surface):
         self.last_preferences = 0
         self.cached_usage, self.sidebar_hidden = {}, False
         self.busy_status = None
+        self.enter_sends, self.pasting, self.steer_after_send = True, False, False
+        self.last_enter = 0
         self.expanded = set()
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.pending = self.executor.submit(self.bootstrap, path, thread)
         self.pending_action = 'bootstrap'
         self.screen.timeout(150)
+        sys.stdout.write('\x1b[?2004h')
+        sys.stdout.flush()
         self.edit = 'prompt'
         def stop(*_):
             self.stopping = True
@@ -1642,8 +1666,10 @@ class Chat(Surface):
         try:
             while not self.stopping:
                 if self.pending and self.pending.done():
+                    succeeded = False
                     try:
                         self.pending.result()
+                        succeeded = True
                         if self.pending_action == 'bootstrap':
                             self.ready = True
                             if prompt:
@@ -1663,6 +1689,11 @@ class Chat(Surface):
                     finally:
                         bootstrap = self.pending_action == 'bootstrap'
                         self.pending = None
+                    if self.steer_after_send:
+                        self.steer_after_send = False
+                        queued = self.runtime.thread(self.slot, self.ident)
+                        if succeeded and queued['queue'] and not queued.get('error'):
+                            self.request('steerQueue')
                     if bootstrap and prompt and self.ready:
                         self.request('send', text=prompt, model=self.model, effort=self.effort)
                         prompt = ''
@@ -1754,6 +1785,28 @@ class Chat(Surface):
                         self.pending = self.executor.submit(self.bootstrap, self.path, self.ident)
                     elif not self.ready:
                         continue
+                    elif kind == 'newline':
+                        position = self.cursors.get('prompt', len(self.fields.get('prompt', '')))
+                        text = self.fields.get('prompt', '')
+                        self.fields['prompt'] = text[:position] + '\n' + text[position:]
+                        self.cursors['prompt'] = position + 1
+                        self.edit = 'prompt'
+                    elif kind == 'steer-queue':
+                        self.request('steerQueue', id=action[1])
+                    elif kind == 'queue-delete':
+                        self.request('queue', id=action[1], delete=True)
+                    elif kind in ('queue-edit', 'queue-menu'):
+                        entry = next((m for m in self.snapshot.get('queue', []) if m['id'] == action[1]), None)
+                        if entry:
+                            picked = self.choice('Queued message', [('Edit', 'edit'), ('Steer now', 'steer'), ('Delete', 'delete')]) if kind == 'queue-menu' else 'edit'
+                            if picked == 'edit':
+                                text = self.edit_text('Edit queued message', entry['text'])
+                                if text is not None:
+                                    self.request('queue', id=entry['id'], text=text)
+                            elif picked == 'steer':
+                                self.request('steerQueue', id=entry['id'])
+                            elif picked == 'delete':
+                                self.request('queue', id=entry['id'], delete=True)
                     elif kind in ('send', 'steer'):
                         self.request(kind, text=self.fields.get('prompt', ''), images=self.images,
                                      model=self.model, effort=self.effort)
@@ -1808,6 +1861,8 @@ class Chat(Surface):
                 except (OSError, ValueError, RuntimeError, StopIteration, subprocess.CalledProcessError) as error:
                     self.error(error)
         finally:
+            sys.stdout.write('\x1b[?2004l')
+            sys.stdout.flush()
             self.save_draft()
             if self.runtime:
                 for client in self.runtime.clients.values():
