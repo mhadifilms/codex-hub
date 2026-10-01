@@ -23,16 +23,18 @@ The default workspace uses your existing `~/.codex` home. If it is not signed in
 
 ## The workspace
 
-- **Projects and chats:** click Add project to browse or create folders. Chats have their own tabs, a searchable sidebar, and pin/rename controls.
+- **Projects and chats:** click Add project to browse or create folders. Each account has its own project list and searchable chat sidebar. New chats appear first; untouched empty chats stay out of saved history. Repeated New chat reuses an empty pane. Close a tab with × or its ··· menu; saved content is retained.
 - **Native Markdown:** headings, bold/italic text, lists, quotes, tables, inline code and highlighted code blocks render directly in the terminal. Links are clickable.
-- **Composer:** type multiline messages, attach images, choose a model and reasoning effort, and click ↑ to send. While a turn runs, ↑ queues the message; ↳ steers the active turn; ■ stops it.
+- **Composer:** type multiline messages, attach images, choose a model and reasoning effort, and click ↑ to send. Click within text to place the caret, or drag to select and replace text. While a turn runs, ■ replaces Send when the composer is empty; while typing it sits to the left of ↑. ↑ queues the message; ↳ steers the active turn.
 - **Queues:** click ≡ to edit or remove pending messages. Interrupted, failed, or recovered queues pause for review before resuming.
 - **Permissions:** the ◇ dropdown selects explicit approvals, automatic risk review, or full access for the next turn. Full access grants unrestricted file/network access without approval prompts.
 - **Context:** hover ◔ to see reported context usage and compaction status. Click it, or use `/compact`, to compact an idle chat.
 - **Activity:** thinking and tool calls stay visible and expandable after a turn finishes. User messages have distinct, bright bubbles.
-- **Selection:** ▣ enters tmux text selection mode. Drag to select/copy; ⧉ copies the latest response. Clipboard integration uses the terminal, `pbcopy`, `wl-copy`, or `xclip` where available. Shift-drag may also select directly in your terminal emulator.
+- **Selection:** drag across transcript text to highlight and copy it. Drag within the composer selects editable text; ⧉ copies that selection when present. ▣ enters tmux text selection mode. Drag to select/copy; ⧉ copies the latest response. Clipboard integration uses the terminal, `pbcopy`, `wl-copy`, or `xclip` where available. Shift-drag may also select directly in your terminal emulator.
 - **Images:** + browses local image files. Attachments have terminal thumbnails and a full-resolution system preview.
 - **Scrolling:** wheel/trackpad movement, a draggable scrollbar, Page Up/Down and a jump-to-latest control. Reading position stays anchored while output streams or the terminal resizes; reaching the bottom resumes following.
+- **Usage:** the bottom-left sidebar shows session and weekly percentages remaining. Read-only snapshots refresh in the background about once a minute while the account is visible; failures retain the last verified values and show a warning marker. Hover for verification time.
+- **Exit:** click ⏻ Exit in the sidebar or ⏻ in the chat header. The UI detaches while chats keep running; reopen `codex-hub` to return.
 - **Persistence:** reopening the hub restores open enhanced chats, their drafts, selected models, and paused queues. Closing a chat marks its tab closed while retaining saved history.
 
 ### After upgrading

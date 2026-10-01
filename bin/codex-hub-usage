@@ -95,6 +95,8 @@ def read_account(account):
     )
     if weekly is None:
         raise ValueError("weekly limit unavailable")
+    short = next((window for window in (limit.get("primary"), limit.get("secondary"))
+                  if window and window.get("windowDurationMins") != 10080), None)
     credits = result.get("rateLimitResetCredits") or {}
     expiries = [
         credit["expiresAt"] for credit in credits.get("credits", [])
@@ -105,6 +107,9 @@ def read_account(account):
     reset_is_anchored = used is not None and used > 0
     return {
         "observedAt": observed_at,
+        "sessionRemainingPercent": None if not short or short.get("usedPercent") is None else max(0, min(100, 100 - short["usedPercent"])),
+        "sessionWindowMins": short.get("windowDurationMins") if short else None,
+        "sessionResetsAt": iso(short.get("resetsAt")) if short else None,
         "usedPercent": used,
         "remainingPercent": None if used is None else max(0, min(100, 100 - used)),
         "weeklyResetsAt": iso(weekly.get("resetsAt")) if reset_is_anchored else None,
