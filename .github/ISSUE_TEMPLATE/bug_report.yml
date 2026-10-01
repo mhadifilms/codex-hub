@@ -1,0 +1,18 @@
+name: Bug report
+description: Report a reproducible problem
+labels: [bug]
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, terminal, Hub version, and relevant doctor output. Remove credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: What did you do, what happened, and what did you expect?
+    validations:
+      required: true

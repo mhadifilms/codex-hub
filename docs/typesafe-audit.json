@@ -1,0 +1,483 @@
+{
+  "before": {
+    "distribution": {
+      "group": "distribution",
+      "stage": "before",
+      "sources": {
+        "README.md": "b01857d376f101f02c8d50288e1c97d31e63279bce40c826075a6ca9c31a4c32",
+        "install.sh": "6ac4e031dbb3b7daec10c094a3b3d41f7a5552de2de534ca7560a8239a1d0381",
+        "VERSION": "2d2454ef0edeb462a6ce8b25d387aaa74df08093d5cea0428a10ce55510c6326",
+        "LICENSE": "99fda9474e27149dfb620ce72594ce24fc530d18f6eadbe77156f7098e25db24",
+        ".github/workflows/test.yml": "ca12f5ed9b565c56b7f291b94881b30c44c688d25938d3c9181f8afb46d64299"
+      },
+      "seconds": 0.13,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "fresh_install": {
+            "type": "noul",
+            "noul": 0.94
+          },
+          "windows": {
+            "type": "noul",
+            "noul": 0.02
+          },
+          "mac_linux": {
+            "type": "noul",
+            "noul": 0.78
+          },
+          "brew": {
+            "type": "noul",
+            "noul": 0.03
+          },
+          "license": {
+            "type": "noul",
+            "noul": 0.96
+          },
+          "professional_readme": {
+            "type": "noul",
+            "noul": 0.89
+          }
+        },
+        "usage": {
+          "input_tokens": 3876,
+          "output_tokens": 105
+        }
+      }
+    },
+    "interaction": {
+      "group": "interaction",
+      "stage": "before",
+      "sources": {
+        "bin/codex-hub-tui": "7dbcb69d64a5e29bab148696d85bf314630bcff60a324eeb1b7b5a2f21c7924a",
+        "tests/test_enter_queue.py": "1f3d7db1ffc694a33240342f7e4d961233df88e4a0f48edb766e9d48fb89afab",
+        "tests/test_scrolling.py": "f8bcafe3ba9472b6be550471e7cf31b4e6d4c1653ac60fe87c75ce3aef70af5b"
+      },
+      "seconds": 0.47,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "queue_duplicates": {
+            "type": "noul",
+            "noul": 0.19
+          },
+          "paste_send": {
+            "type": "noul",
+            "noul": 0.14
+          },
+          "scroll_anchor": {
+            "type": "noul",
+            "noul": 0.88
+          },
+          "selection": {
+            "type": "noul",
+            "noul": 0.95
+          },
+          "details": {
+            "type": "noul",
+            "noul": 0.91
+          },
+          "permission_ui": {
+            "type": "noul",
+            "noul": 0.92
+          },
+          "models": {
+            "type": "noul",
+            "noul": 0.92
+          },
+          "full_image": {
+            "type": "noul",
+            "noul": 0.9
+          },
+          "slash": {
+            "type": "noul",
+            "noul": 0.83
+          }
+        },
+        "usage": {
+          "input_tokens": 30208,
+          "output_tokens": 153
+        }
+      }
+    },
+    "lifecycle": {
+      "group": "lifecycle",
+      "stage": "before",
+      "sources": {
+        "bin/codex-hub-tui": "7dbcb69d64a5e29bab148696d85bf314630bcff60a324eeb1b7b5a2f21c7924a",
+        "tests/test_chat_controls.py": "0566406186147fa438309f45ecaa2d96abdb5652fcdc399d950b8de41874353b"
+      },
+      "seconds": 0.4,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "empty_history": {
+            "type": "noul",
+            "noul": 0.23
+          },
+          "close_race": {
+            "type": "noul",
+            "noul": 0.44
+          },
+          "archive_discoverable": {
+            "type": "noul",
+            "noul": 0.17
+          },
+          "delete_discoverable": {
+            "type": "noul",
+            "noul": 0.65
+          },
+          "right_click": {
+            "type": "noul",
+            "noul": 0.16
+          },
+          "isolation": {
+            "type": "noul",
+            "noul": 0.1
+          },
+          "recency": {
+            "type": "noul",
+            "noul": 0.9
+          },
+          "restore": {
+            "type": "noul",
+            "noul": 0.71
+          }
+        },
+        "usage": {
+          "input_tokens": 30060,
+          "output_tokens": 146
+        }
+      }
+    },
+    "markdown_config": {
+      "group": "markdown_config",
+      "stage": "before",
+      "sources": {
+        "lib/hub_markdown.py": "02584fe9a09861ffb128e8255e35a6b68e32ee724c194a5d01cb2a3572ff5ec8",
+        "lib/hub_config.py": "b31e40ff190a61c93f200e93356ce646ce29d61fefdc0136352bdfded5c33460",
+        "bin/codex-sub": "ec899658222ecbed532e9ff896abe90a80f5a9fa15f495e876aea2eb5f129f4c",
+        "tests/test_config_markdown.py": "80d24030a637809f594060d0ab34dffb3c82e51e8b308b90c1b44e2327934a4a"
+      },
+      "seconds": 0.12,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "unsafe_link": {
+            "type": "noul",
+            "noul": 0.1
+          },
+          "config_atomic": {
+            "type": "noul",
+            "noul": 0.76
+          },
+          "fixed_identity": {
+            "type": "noul",
+            "noul": 0.07
+          },
+          "auth_isolation": {
+            "type": "noul",
+            "noul": 0.88
+          },
+          "markdown": {
+            "type": "noul",
+            "noul": 0.92
+          }
+        },
+        "usage": {
+          "input_tokens": 3969,
+          "output_tokens": 90
+        }
+      }
+    },
+    "runtime": {
+      "group": "runtime",
+      "stage": "before",
+      "sources": {
+        "lib/hub_runtime.py": "5608e7d3a386263c2de5f86b8cbb6e6e0b08a41c4734260965be83bde1588c4a",
+        "bin/codex-hub-usage": "248cfad76cf63c601680c81f608f3bfc6772b620662a551aa9a14c202831fbc6",
+        "tests/test_runtime.py": "c4c0e380f244af6b33687736362a7c5c22ac1cf54a3d3604bdd26c5fc194fd4e"
+      },
+      "seconds": 0.27,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "dispatch_replay": {
+            "type": "noul",
+            "noul": 0.1
+          },
+          "request_loss": {
+            "type": "noul",
+            "noul": 0.83
+          },
+          "transport_cleanup": {
+            "type": "noul",
+            "noul": 0.87
+          },
+          "permission_escalation": {
+            "type": "noul",
+            "noul": 0.14
+          },
+          "usage_correctness": {
+            "type": "noul",
+            "noul": 0.86
+          },
+          "image_paths": {
+            "type": "noul",
+            "noul": 0.96
+          },
+          "crash_recovery": {
+            "type": "noul",
+            "noul": 0.94
+          }
+        },
+        "usage": {
+          "input_tokens": 10591,
+          "output_tokens": 131
+        }
+      }
+    }
+  },
+  "after": {
+    "distribution": {
+      "group": "distribution",
+      "stage": "after",
+      "sources": {
+        "README.md": "12cf48a034caf6403dc8e3bbbb8d84ba29ff1e5299cfe813abae629d3c442538",
+        "install.sh": "ca6f26c748177022b2c921617a1ab174f7f3d7adc6218df0f44e9a030329e762",
+        "install.ps1": "977df6691eb73c2dc1d558d69ca59bf2adf494f51ede9c19acbca0e80014071b",
+        "uninstall.sh": "f0029361a96f4f1e5656866dbff48e896be8af2b21b503699728601536d7ef78",
+        "VERSION": "e9dd8507f4bf0c6f42458e41aea833ad0bd3f6127272335eee9bf4d58541ed67",
+        "LICENSE": "99fda9474e27149dfb620ce72594ce24fc530d18f6eadbe77156f7098e25db24",
+        ".github/workflows/test.yml": "5c02f63b91ebdfe47c9b600acd0e9b15470fcda6fbda6fda8eaaaa56e48ec784",
+        ".github/scripts/test-windows.sh": "10067e42d44b1d4ac8f894e89de99c80fe2718c407829edb15bda730d91cd2c8",
+        "tests/test_install.py": "c12b314e1c548c55e2140f4cd217b96be9e618899186d7b3cdf3287dbe792f99"
+      },
+      "seconds": 0.16,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "fresh_install": {
+            "type": "noul",
+            "noul": 0.94
+          },
+          "windows": {
+            "type": "noul",
+            "noul": 0.83
+          },
+          "mac_linux": {
+            "type": "noul",
+            "noul": 0.12
+          },
+          "brew": {
+            "type": "noul",
+            "noul": 0.76
+          },
+          "license": {
+            "type": "noul",
+            "noul": 0.97
+          },
+          "professional_readme": {
+            "type": "noul",
+            "noul": 0.96
+          }
+        },
+        "usage": {
+          "input_tokens": 6047,
+          "output_tokens": 105
+        }
+      }
+    },
+    "interaction": {
+      "group": "interaction",
+      "stage": "release",
+      "sources": {
+        "bin/codex-hub-tui": "83931d2bf5556927a03db3f74806d5a0189a653464783f555155909a2ff07097"
+      },
+      "seconds": 0.35,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "queue_duplicates": {
+            "type": "noul",
+            "noul": 0.3
+          },
+          "paste_send": {
+            "type": "noul",
+            "noul": 0.27
+          },
+          "scroll_anchor": {
+            "type": "noul",
+            "noul": 0.66
+          },
+          "selection": {
+            "type": "noul",
+            "noul": 0.95
+          },
+          "details": {
+            "type": "noul",
+            "noul": 0.92
+          },
+          "permission_ui": {
+            "type": "noul",
+            "noul": 0.91
+          },
+          "models": {
+            "type": "noul",
+            "noul": 0.94
+          },
+          "full_image": {
+            "type": "noul",
+            "noul": 0.9
+          },
+          "slash": {
+            "type": "noul",
+            "noul": 0.85
+          }
+        },
+        "usage": {
+          "input_tokens": 31712,
+          "output_tokens": 153
+        }
+      }
+    },
+    "lifecycle": {
+      "group": "lifecycle",
+      "stage": "release",
+      "sources": {
+        "bin/codex-hub-tui": "83931d2bf5556927a03db3f74806d5a0189a653464783f555155909a2ff07097"
+      },
+      "seconds": 0.33,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "empty_history": {
+            "type": "noul",
+            "noul": 0.28
+          },
+          "close_race": {
+            "type": "noul",
+            "noul": 0.71
+          },
+          "archive_discoverable": {
+            "type": "noul",
+            "noul": 0.91
+          },
+          "delete_discoverable": {
+            "type": "noul",
+            "noul": 0.44
+          },
+          "right_click": {
+            "type": "noul",
+            "noul": 0.91
+          },
+          "isolation": {
+            "type": "noul",
+            "noul": 0.12
+          },
+          "recency": {
+            "type": "noul",
+            "noul": 0.85
+          },
+          "restore": {
+            "type": "noul",
+            "noul": 0.83
+          }
+        },
+        "usage": {
+          "input_tokens": 31688,
+          "output_tokens": 146
+        }
+      }
+    },
+    "markdown_config": {
+      "group": "markdown_config",
+      "stage": "after",
+      "sources": {
+        "lib/hub_markdown.py": "02584fe9a09861ffb128e8255e35a6b68e32ee724c194a5d01cb2a3572ff5ec8",
+        "lib/hub_config.py": "14b423cef07a9db5a0d6b6022548009b9b5ecdfbbd5803a4f84ee3d3c28d8e10",
+        "lib/hub_platform.py": "cf0f08b436e910ff8c25b23bf59971852b2cd9a8a15f94f9de3ca8f3d13ea326",
+        "bin/codex-sub": "ec899658222ecbed532e9ff896abe90a80f5a9fa15f495e876aea2eb5f129f4c",
+        "tests/test_config_markdown.py": "80d24030a637809f594060d0ab34dffb3c82e51e8b308b90c1b44e2327934a4a",
+        "tests/test_platform.py": "d6106e7725c50d548c781e99683c67ef1c4e70de8b5cf0b2711cc7f77dba83ca"
+      },
+      "seconds": 0.15,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "unsafe_link": {
+            "type": "noul",
+            "noul": 0.14
+          },
+          "config_atomic": {
+            "type": "noul",
+            "noul": 0.79
+          },
+          "fixed_identity": {
+            "type": "noul",
+            "noul": 0.07
+          },
+          "auth_isolation": {
+            "type": "noul",
+            "noul": 0.87
+          },
+          "markdown": {
+            "type": "noul",
+            "noul": 0.92
+          }
+        },
+        "usage": {
+          "input_tokens": 5187,
+          "output_tokens": 90
+        }
+      }
+    },
+    "runtime": {
+      "group": "runtime",
+      "stage": "after",
+      "sources": {
+        "lib/hub_runtime.py": "f74993e485d6d8e1e23e8ca3acb7e52e7f3a78e2b1e39a593a89eabcc9fa14ba",
+        "bin/codex-hub-usage": "248cfad76cf63c601680c81f608f3bfc6772b620662a551aa9a14c202831fbc6",
+        "tests/test_runtime.py": "8a529cd395b9e5abfe644e2fd3141e406a643faaeafc6b6d14c07171d0e77663"
+      },
+      "seconds": 0.21,
+      "result": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "dispatch_replay": {
+            "type": "noul",
+            "noul": 0.09
+          },
+          "request_loss": {
+            "type": "noul",
+            "noul": 0.83
+          },
+          "transport_cleanup": {
+            "type": "noul",
+            "noul": 0.88
+          },
+          "permission_escalation": {
+            "type": "noul",
+            "noul": 0.14
+          },
+          "usage_correctness": {
+            "type": "noul",
+            "noul": 0.86
+          },
+          "image_paths": {
+            "type": "noul",
+            "noul": 0.95
+          },
+          "crash_recovery": {
+            "type": "noul",
+            "noul": 0.95
+          }
+        },
+        "usage": {
+          "input_tokens": 10688,
+          "output_tokens": 131
+        }
+      }
+    }
+  }
+}

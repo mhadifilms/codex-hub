@@ -35,6 +35,19 @@ class NativeIntegration(test_hub.HubIntegration):
             fake.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
                             'Path(os.environ["CODEX_HOME"]).joinpath("copied.txt").write_text(sys.stdin.read())\n')
             fake.chmod(0o700)
+        # WSL tests must not touch the real Windows viewer or clipboard either.
+        fake = cls.fakebin / 'powershell.exe'
+        fake.write_text('#!/usr/bin/env python3\nimport os,sys,json,base64\nfrom pathlib import Path\n'
+                        'home=Path(os.environ["CODEX_HOME"])\n'
+                        'if "-EncodedCommand" in sys.argv:\n'
+                        ' script=base64.b64decode(sys.argv[-1]).decode("utf-16-le")\n'
+                        ' value=script.removeprefix("Start-Process -FilePath ").strip()[1:-1].replace("\'\'", "\'")\n'
+                        ' home.joinpath("opened.json").write_text(json.dumps([value]))\n'
+                        'else: home.joinpath("copied.txt").write_text(sys.stdin.read())\n')
+        fake.chmod(0o700)
+        fake = cls.fakebin / 'wslpath'
+        fake.write_text('#!/usr/bin/env python3\nimport sys\nprint(sys.argv[-1])\n')
+        fake.chmod(0o700)
 
     @classmethod
     def capture(cls):
@@ -50,7 +63,13 @@ class NativeIntegration(test_hub.HubIntegration):
         position = None
         def locate():
             nonlocal position
-            for y, line in enumerate(cls.capture().splitlines()):
+            width = int(hub.tmux('display-message', '-p', '-t', cls.chat['pane'], '#{pane_width}'))
+            lines = cls.capture().splitlines()
+            # tmux resizes immediately; curses repaints on its next event.
+            # Wait for the header to match the new pane before locating a hit.
+            if label in ('···', '☰') and (not lines or not width - 6 <= lines[0].rfind('×') <= width - 3):
+                return False
+            for y, line in enumerate(lines):
                 if label in line:
                     position = (line.index(label) + 1, y)
                     return True
@@ -89,8 +108,8 @@ class NativeIntegration(test_hub.HubIntegration):
         self.wait_for(lambda: (self.root / '1/opened.json').exists())
         self.assertEqual(json.loads((self.root / '1/opened.json').read_text()), ['https://example.com/docs'])
         self.send_text('Queued message')
-        self.wait_for(lambda: '≡ 1' in self.capture())
-        self.click_text('≡ 1')
+        self.wait_for(lambda: 'Queue 1' in self.capture())
+        self.click_text('Queue 1')
         self.click_text('Queued message')
         self.click_text('Edit text')
         self.chat_click(5, 5)
@@ -118,24 +137,26 @@ class NativeIntegration(test_hub.HubIntegration):
         self.assertIn('echo fixture', self.capture())
         self.click_text('Decline')
         self.wait_for(lambda: any(r.get('id') == 123 and r.get('result', {}).get('decision') == 'decline' for r in self.rpc()))
-        self.click_text('◇ Ask approval')
+        self.click_text('Ask approval')
         self.click_text('Approve for me')
-        self.wait_for(lambda: '◇ Approve for me' in self.capture())
-        self.click_text('◔')
+        self.wait_for(lambda: 'Approve for me' in self.capture())
+        self.click_text('12%')
         self.wait_for(lambda: '15,000 / 128,000' in self.capture())
         self.click_text('Back')
-        self.click_text('ⓘ')
+        self.click_text('···')
+        self.click_text('Chat details')
         self.click_text('Pin chat')
         self.wait_for(lambda: ident in hub.state().get('pins', {}).get('1', []))
         self.wait_for(lambda: 'Pinned' in self.sidebar_text('1'))
-        self.click_text('ⓘ')
-        # Inline thumbnail and image input use local files.
+        self.click_text('···')
+        self.click_text('Chat details')
+        # Image preview opens the original local file, without cell conversion.
         from PIL import Image
         sample = self.project / 'sample.png'
         Image.new('RGB', (48, 32), '#3c7099').save(sample)
         self.click_text('+')
         self.click_text('sample.png')
-        self.click_text('▧ 1')
+        self.click_text('Images 1')
         self.click_text('sample.png')
         self.click_text('Preview')
         self.wait_for(lambda: (self.root / '1/opened.json').exists() and json.loads((self.root / '1/opened.json').read_text()) == [str(sample)])
@@ -167,7 +188,8 @@ class NativeIntegration(test_hub.HubIntegration):
         self.wait_for(lambda: int(hub.tmux('display-message', '-p', '-t', self.chat['sidebar'], '#{pane_width}')) == 1)
         self.click_text('☰')
         self.wait_for(lambda: int(hub.tmux('display-message', '-p', '-t', self.chat['sidebar'], '#{pane_width}')) == 26)
-        self.click_text('▣')
+        self.click_text('···')
+        self.click_text('Select text')
         self.wait_for(lambda: hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_in_mode}') == '1')
         hub.tmux('send-keys', '-X', '-t', self.chat['pane'], 'cancel')
         self.wait_for(lambda: hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_in_mode}') == '0')
@@ -208,7 +230,7 @@ class NativeIntegration(test_hub.HubIntegration):
         os.write(self.fd, b'\x15/permissions\n')
         self.wait_for(lambda: 'Approval mode · next turn' in self.capture())
         self.click_text('Approve for me')
-        self.wait_for(lambda: '◇ Approve for me' in self.capture())
+        self.wait_for(lambda: 'Approve for me' in self.capture())
         original_pid = hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_pid}')
         hub.hub_config.add('work', label='Work', root=self.root)
         hub.reload_config()

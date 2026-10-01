@@ -1,112 +1,128 @@
 # Codex Hub
 
-A native terminal workspace for Codex. Organize projects and chats, read rich Markdown, keep work running in tmux, and pick up where you left off.
+[![Tests](https://github.com/mhadifilms/codex-hub/actions/workflows/test.yml/badge.svg)](https://github.com/mhadifilms/codex-hub/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/mhadifilms/codex-hub)](https://github.com/mhadifilms/codex-hub/releases/latest)
+[![MIT License](https://img.shields.io/github/license/mhadifilms/codex-hub)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%28WSL%29-555)
 
-![Codex Hub terminal demo](docs/demo.gif)
+**A terminal workspace that makes Codex feel at home.**
 
-*Scripted terminal demonstration with sample projects and responses. No personal data or live credentials.*
+Organize projects and chats in a clickable sidebar, read native Markdown, steer running work, and return to your conversations after a restart. Powered by the official [Codex CLI](https://developers.openai.com/codex/cli/) and tmux.
+
+![Codex Hub](docs/demo.gif)
 
 ## Install
 
-Requires macOS or Linux, **Python 3.10+**, **tmux 3.2+**, and the [Codex CLI](https://developers.openai.com/codex/cli/). A terminal with mouse reporting and 256 colors works best.
+Requires Python **3.10+**, tmux **3.2+**, Codex CLI **0.159+**, and a terminal with mouse reporting and 256 colors.
+
+### Homebrew · macOS and Linux
+
+```sh
+brew install mhadifilms/codex-hub/codex-hub
+# If Codex CLI is not installed:
+brew install --cask codex
+codex login
+codex-hub
+```
+
+### From source · macOS and Linux
 
 ```sh
 git clone https://github.com/mhadifilms/codex-hub.git
 cd codex-hub
-./install.sh
-codex-hub
+./install.sh --bootstrap
+codex login
+~/.local/bin/codex-hub
 ```
 
-The installer uses `~/.local/bin`, creates a private Python environment for Rich and Pillow, and reports if that bin directory needs adding to PATH. `./install.sh --prefix /your/path` changes the install location. `--no-deps` uses your existing Python installation when Rich and Pillow are already installed.
+`--bootstrap` installs missing dependencies using Homebrew on macOS or apt/npm on Debian and Ubuntu. On other Linux distributions, install the requirements with your package manager and run `./install.sh`.
 
-The default workspace uses your existing `~/.codex` home. If it is not signed in, run `codex login` with the normal browser flow. Existing isolated hub homes are discovered during an upgrade; credentials and chat history stay in place.
+The installer creates a dedicated Python environment. Add `~/.local/bin` to your shell's PATH to use `codex-hub` directly. Use `--prefix /your/path` for a different install location, or `--no-deps` when the selected Python already has Rich and Pillow.
+
+### Windows · Windows Terminal + WSL
+
+Windows support runs inside WSL; tmux and curses require a Linux terminal environment.
+
+1. In an administrator PowerShell, run `wsl --install`. Restart if requested, then open Ubuntu once to finish setup.
+2. Clone or download this repository, then run PowerShell in its directory:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\install.ps1
+   ```
+
+3. Open **Ubuntu** in Windows Terminal:
+
+   ```sh
+   codex login
+   ~/.local/bin/codex-hub
+   ```
+
+Use `-Distribution NAME` if your WSL distribution has another name. The installer supports Ubuntu/Debian dependency setup; `-NoBootstrap` uses existing dependencies. Clipboard copy and links use Windows applications when WSL interoperability is available. Store active projects in the Linux filesystem for better performance.
 
 ## The workspace
 
-- **Projects and chats:** click Add project to browse or create folders. Each account has its own project list and searchable chat sidebar. New chats appear first; untouched empty chats stay out of saved history. Repeated New chat reuses an empty pane. Close a tab with × or its ··· menu; saved content is retained.
-- **Native Markdown:** headings, bold/italic text, lists, quotes, tables, inline code and highlighted code blocks render directly in the terminal. Links are clickable.
-- **Composer:** type multiline messages, attach images, choose a model and reasoning effort, and press Enter or click ↑ to send. Double Enter sends the queue into the active turn, or starts it when idle. Use ↵ or Alt+Enter for a newline; Shift+Enter also works when the terminal reports a distinct key sequence. Multiline bracketed paste stays in the draft until explicitly sent. Click within text to place the caret, or drag to select and replace text. While a turn runs, ■ replaces Send when the composer is empty; while typing it sits to the left of ↑. ↑ queues the message; ↳ steers the active turn.
-- **Queues:** messages stack above the composer with per-message ↳ Steer, ⌫ delete and ··· edit/options controls. Double Enter dispatches the queued messages together; click a row’s Steer to dispatch only that message. Click ≡ to review all pending messages. Interrupted, failed, or recovered queues pause for review before resuming.
-- **Permissions:** the ◇ dropdown selects explicit approvals, automatic risk review, or full access for the next turn. Full access grants unrestricted file/network access without approval prompts.
-- **Context:** hover ◔ to see reported context usage and compaction status. Click it, or use `/compact`, to compact an idle chat.
-- **Activity:** thinking and tool calls stay visible and expandable after a turn finishes. User messages have distinct, bright bubbles.
-- **Selection:** drag across transcript text to highlight and copy it. Drag within the composer selects editable text; ⧉ copies that selection when present. ▣ enters tmux text selection mode. Drag to select/copy; ⧉ copies the latest response. Clipboard integration uses the terminal, `pbcopy`, `wl-copy`, or `xclip` where available. Shift-drag may also select directly in your terminal emulator.
-- **Images:** + browses local image files. Image preview and linked images open the original file directly in the system viewer, at full resolution. No terminal thumbnail conversion is performed.
-- **Scrolling:** wheel/trackpad movement, a draggable scrollbar, Page Up/Down and a jump-to-latest control. Reading position stays anchored while output streams or the terminal resizes; reaching the bottom resumes following.
-- **Usage:** the bottom-left sidebar shows session and weekly percentages remaining. Read-only snapshots refresh in the background about once a minute while the account is visible; failures retain the last verified values and show a warning marker. Hover for verification time.
-- **Exit:** click ⏻ Exit in the sidebar or ⏻ in the chat header. The UI detaches while chats keep running; reopen `codex-hub` to return.
-- **Persistence:** reopening the hub restores open enhanced chats, their drafts, selected models, and paused queues. Closing a chat marks its tab closed while retaining saved history.
+| Feature | How it works |
+| --- | --- |
+| Projects and chats | Click **Add project** to browse or create folders. Search chats, pin favorites, and keep recent work at the top. |
+| Chat management | Right-click a chat or use **···** to rename, pin, close, archive, or delete it. **Archived chats** lets you restore conversations. Delete requires confirmation. |
+| Drafts | Untouched empty chats stay out of history. Nonempty drafts appear as **Draft** and survive restarts while their tab is open. |
+| Messages and queues | **Enter** sends, or queues while Codex is working. **Double Enter** dispatches the queue into the active turn. Each queued message has Steer, edit, and delete controls. |
+| Multiline input | **Alt+Enter** or **↵** inserts a newline. Bracketed multiline paste stays in the draft until sent. Shift+Enter works when your terminal reports it distinctly. |
+| Markdown | Styled paragraphs, headings, lists, tables, quotes, links, and highlighted code render directly in the terminal. |
+| Scrolling | Wheel/trackpad input, a draggable scrollbar, Page Up/Down, and jump to latest. Reading position stays anchored during streaming and resizing. |
+| Activity | Thinking and tool calls remain expandable after a turn finishes. User messages have distinct bubbles. |
+| Models and permissions | Choose models and reasoning effort from the installed backend's catalog. The approval dropdown offers Ask approval, Approve for me, and Full access. Full access allows unrestricted file/network actions without approval prompts. |
+| Context and usage | Hover the context percentage for context usage and compaction status. The sidebar shows verified session and weekly percentages remaining. |
+| Selection | Click to position the composer caret; drag to select text. **Copy** copies selection or the latest response. The chat menu opens tmux text selection mode. |
+| Images and links | **+** attaches local images. Preview opens the original image in the system viewer at full resolution. Click links to open them. |
+| Persistence | Reopen the hub to restore open chats, drafts, model choices, and paused queues. Close stops a tab and keeps history; archive hides history until restored. |
+| Exit | Click **Exit** to detach. Chats keep running in tmux until stopped or closed. |
 
-### After upgrading
+Icons show labels on hover. **☰** collapses the sidebar for more room; the layout supports an 80-column terminal.
 
-Existing chat processes keep running their original frontend until reconnected. The sidebar shows **↻ Update this chat** for an older frontend. Open its **···** menu and choose **Reload chat**, then confirm; stop active work first. Drafts, history and paused queues are retained. `codex-hub reload ACCOUNT` reconnects idle enhanced chats. `--force` confirms restarting a legacy frontend that cannot report its activity; busy current frontends are still refused. The running version appears above the conversation and in the sidebar.
+### Slash commands
 
-Use `codex-hub doctor` or `/status` to see the exact backend executable and version. If your terminal's PATH selects an older CLI, set `codexBinary` to the desired executable in the private JSON config, then reload idle chats. `CODEX_HUB_CODEX` is an optional environment override. Model choices come from that backend's catalog; catalog visibility alone does not verify inference access.
+`/model`, `/approvals` (`/permissions`), `/compact`, `/status`, `/new`, `/resume`, `/stop`, `/queue`, `/pin`, and `/help` run locally when you press Enter. Suggestions appear while typing `/`. Unsupported CLI commands report an explicit error; chat details offer **Open in Codex CLI** for CLI-specific workflows.
 
-Icons show explanatory labels on hover. The interface works in an 80-column terminal; ☰ collapses the sidebar to make more room.
+### Configuration
 
-Slash commands include `/model`, `/approvals` (also `/permissions`), `/compact`, `/status`, `/new`, `/resume`, `/stop`, `/queue`, `/pin`, and `/help`. Suggestions appear while typing `/`. Press Enter to run a slash command; Enter in ordinary message text sends or queues it. CLI-specific slash commands fail explicitly and can be used through **Open in Codex CLI** in chat details.
-
-## Configuration
-
-Click **Settings** in the sidebar to add an account, edit its display label/description, choose a default, or sign in. There is no fixed account count. Additional accounts are optional; each can use an existing Codex home or a new isolated home.
+The default workspace uses your existing `~/.codex` home. Click **Settings** to adjust scrolling, rename a workspace, choose a default, or add another Codex home. Additional homes are optional and each has its own chat and project lists.
 
 ```sh
-codex-hub config                         # print the private config path
+codex-hub config                         # config file location
 codex-hub accounts add work --label Work
 codex-hub accounts login work
 codex-hub accounts edit work --default
-codex-hub accounts list
+codex-hub doctor                         # backend path, version, and diagnostics
 ```
 
-The config is JSON, outside the repository:
+Settings live under `$XDG_CONFIG_HOME/codex-hub` or `~/.config/codex-hub`. Existing installations reuse `~/.codex-subs`. Set `CODEX_HUB_ROOT` to choose another directory. `scrollLines` sets wheel sensitivity from 1–20 lines per event; Settings includes precise, normal, and fast presets.
 
-```json
-{
-  "schemaVersion": 1,
-  "defaultAccount": "default",
-  "scrollLines": 1,
-  "accounts": {
-    "default": {
-      "label": "Default",
-      "description": "Local workspace",
-      "home": "~/.codex"
-    }
-  }
-}
-```
+Use `--home /path/to/codex-home` with `accounts add` to reuse another existing Codex home. Otherwise it creates an isolated home. Removing an account removes its configuration entry and retains its files. Projects are ordinary filesystem folders; separate Git worktrees help when simultaneous chats edit the same repository.
 
-Use any command-safe account ID and display label. `scrollLines` controls wheel sensitivity (1–20 lines per event); Settings cycles through precise, normal and fast scrolling. Rapid wheel events are batched before repainting. `--home /path/to/codex-home` reuses an existing home; otherwise Add creates a private isolated home. `accounts remove ID` removes the config entry only and refuses while that workspace's tmux session exists. Files, credentials and history are retained. Stop the relevant session before changing its home path manually.
-
-Fresh installs store settings under `$XDG_CONFIG_HOME/codex-hub` or `~/.config/codex-hub`. Upgrades reuse `~/.codex-subs` when present. Set `CODEX_HUB_ROOT` to choose another state/config directory. Private settings and credentials never belong in the repository.
-
-Optional shell entry points:
+### Updates and uninstall
 
 ```sh
-codex-hub new default ~/projects/website 'Website work'
-codex-hub list
-codex-hub cli default ~/projects/website
-codex-hub usage all
-codex-hub --version
+brew upgrade mhadifilms/codex-hub/codex-hub
+brew uninstall codex-hub
 ```
 
-`codex-sub` and `codex-hub-usage` remain as compatibility aliases. Project files are shared filesystem data; separate Git worktrees are useful when concurrent chats edit the same repository.
+For source installs, `git pull` and rerun the installer. `./uninstall.sh` removes the installed Hub launchers and libraries while retaining configuration, chats, and Codex CLI. Use the same `--prefix` as installation.
 
-## Boundaries
+Existing chats keep their running frontend until reloaded. Stop active work, then use **··· → Reload chat** or `codex-hub reload ACCOUNT`. Drafts and saved history are retained; recovered queues pause for review. The sidebar marks older frontends with **Update this chat**.
 
-Codex Hub connects to the installed Codex app-server through stdin/stdout. There is no browser UI or localhost server. Available models and protocol behavior follow your installed CLI and account. Version 0.1.0 was checked against Codex CLI 0.146.0; behavioral tests use a deterministic local backend rather than live inference.
+## Terminal compatibility
 
-The terminal owns fonts and line spacing. Images open in the system viewer using the original file. The TUI does not convert images into colored terminal cells. Desktop voice, embedded browser/editor panels, clipboard-image paste, and desktop-only plugins are not supported. Client interactions outside supported chat, approval and question requests fail explicitly with a stock CLI fallback. Pins and display names are local to the hub.
+tmux **3.4** can lose the first click when selecting immediately after a right click. Pause briefly before selecting, click again, or upgrade tmux (`brew upgrade tmux` with Homebrew). The regular **···** chat controls remain available. Linux CI exercises the slower click path on that version.
 
-## Development
+The terminal controls fonts and line spacing. Clipboard support uses `pbcopy`, Windows PowerShell under WSL, `wl-copy`, or `xclip`; tmux provides a copy buffer fallback. Image preview opens an external viewer. Desktop voice, embedded browser/editor panels, clipboard-image paste, and desktop-only plugins are not supported.
 
-```sh
-python3 -m pip install -r requirements.txt
-python3 -m unittest discover -s tests -v
-```
+Codex Hub talks to the installed app-server through stdin/stdout. Models and protocol capabilities follow that CLI and the signed-in account. Run `codex-hub doctor` to diagnose an unexpected catalog or connection failure. Set `codexBinary` in config, or `CODEX_HUB_CODEX`, to select another executable.
 
-Tests create disposable tmux servers and fake account homes. They check actual terminal mouse input, native Markdown, queues, permissions, configurable homes, restart recovery, and the compact layout without production credentials.
+If a chat stays on **Connecting**, check `doctor` and `codex login status`, then use Retry. Hub recovers an unsent draft when the backend no longer has its empty thread; missing conversations with sent messages are reported instead of replaced.
 
-The [demo generator](scripts/demo.py) drives the real TUI against sample data and renders its captured terminal frames into an MP4 and GIF. It needs Pillow and ffmpeg. No real desktop or account contents are captured.
+## Contributing
 
-MIT licensed. See [CHANGELOG](CHANGELOG.md).
+See [CONTRIBUTING](CONTRIBUTING.md), [CHANGELOG](CHANGELOG.md), and [security reporting](SECURITY.md). Issues and pull requests are welcome.
+
+Independent open-source client for OpenAI Codex. [MIT licensed](LICENSE).

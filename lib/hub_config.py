@@ -98,6 +98,13 @@ def initialize(root=ROOT):
         data = load(root)
         if not (root / 'config.json').exists():
             save(data, root)
+        if not (root / 'tmux.conf').exists():
+            library = Path(__file__).resolve().parent
+            bundled = library / 'tmux.conf'
+            if not bundled.exists():
+                bundled = library.parent / 'tmux.conf'
+            shutil.copyfile(bundled, root / 'tmux.conf')
+            (root / 'tmux.conf').chmod(0o600)
     return data
 
 
