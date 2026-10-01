@@ -29,6 +29,13 @@ class NativeIntegration(test_hub.HubIntegration):
                             'Path(os.environ["CODEX_HOME"]).joinpath("opened.json").write_text(json.dumps(sys.argv[1:]))\n')
             fake.chmod(0o700)
 
+        # Keep selection tests away from the user's real clipboard.
+        for name in ('pbcopy', 'wl-copy', 'xclip'):
+            fake = cls.fakebin / name
+            fake.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
+                            'Path(os.environ["CODEX_HOME"]).joinpath("copied.txt").write_text(sys.stdin.read())\n')
+            fake.chmod(0o700)
+
     @classmethod
     def capture(cls):
         return subprocess.run(['tmux', '-S', str(hub.SOCKET), 'capture-pane', '-p', '-t', cls.chat['pane']], text=True, capture_output=True, check=True).stdout

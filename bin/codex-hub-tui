@@ -16,6 +16,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import threading
 
 SELF = Path(__file__).resolve()
 LIB = SELF.parent.parent / 'lib'
@@ -85,7 +86,7 @@ def update_state(change):
 def remember(slot, path):
     path = str(Path(path).expanduser().resolve())
     def change(data):
-        projects = data.setdefault('projects', [])
+        projects = data.setdefault('projectsByAccount', {}).setdefault(slot, account_projects(slot, data))
         if path not in projects:
             projects.append(path)
         data.setdefault('selected', {})[slot] = path
@@ -93,6 +94,22 @@ def remember(slot, path):
         if path in collapsed:
             collapsed.remove(path)
     update_state(change)
+
+
+def account_projects(slot, data=None):
+    data = state() if data is None else data
+    scoped = data.get('projectsByAccount', {}).get(slot)
+    if scoped is not None:
+        return list(scoped)
+    # Legacy folder lists were global. Recover only attributable account paths.
+    paths = [record['cwd'] for record in data.get('chats', {}).get(slot, {}).values()]
+    if data.get('selected', {}).get(slot):
+        paths.append(data['selected'][slot])
+    return list(dict.fromkeys(paths))
+
+
+def visible_record(record):
+    return record.get('has_content', record.get('title', 'New chat') != 'New chat') or record.get('has_draft', False)
 
 
 def pin_key(window):
@@ -107,10 +124,10 @@ def toggle_pin(slot, key):
 
 
 def windows():
-    keys = ('id', 'session', 'name', 'pane', 'path', 'kind', 'thread', 'sidebar', 'engine', 'version', 'busy')
+    keys = ('id', 'session', 'name', 'pane', 'path', 'kind', 'thread', 'sidebar', 'engine', 'version', 'busy', 'created')
     fmt = '\t'.join(('#{window_id}', '#{session_name}', '#{window_name}',
                      '#{@hub_main}', '#{@hub_project}', '#{@hub_kind}',
-                     '#{@hub_thread}', '#{@hub_sidebar}', '#{@hub_engine}', '#{@hub_version}', '#{@hub_busy}'))
+                     '#{@hub_thread}', '#{@hub_sidebar}', '#{@hub_engine}', '#{@hub_version}', '#{@hub_busy}', '#{@hub_created}'))
     rows = []
     for line in tmux('list-windows', '-a', '-F', fmt).splitlines():
         fields = line.split('\t')
@@ -128,7 +145,7 @@ def history(slot):
     databases = list(account_home(slot).glob('state_*.sqlite'))
     if not databases:
         return [{**record, 'id': ident, 'title': record.get('title', 'New chat'), 'updated_at': record.get('updated_at', 0)}
-                for ident, record in state().get('chats', {}).get(slot, {}).items()], ''
+                for ident, record in state().get('chats', {}).get(slot, {}).items() if visible_record(record)], ''
     database = max(databases, key=lambda p: int(p.stem.split('_')[-1]))
     try:
         with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=.2)) as db:
@@ -138,13 +155,13 @@ def history(slot):
         rows = [{**dict(row), 'cwd': str(Path(row['cwd']).resolve())} for row in rows]
         existing = {row['id'] for row in rows}
         rows += [{**record, 'id': ident, 'title': record.get('title', 'New chat'), 'updated_at': record.get('updated_at', 0)}
-                 for ident, record in state().get('chats', {}).get(slot, {}).items() if ident not in existing]
+                 for ident, record in state().get('chats', {}).get(slot, {}).items() if ident not in existing and visible_record(record)]
         return rows, ''
     except sqlite3.Error:
         return [], 'Saved chats temporarily unavailable'
 
 
-def repositories():
+def repositories(slot):
     result = []
     base = Path.home() / 'Documents/GitHub'
     if base.is_dir():
@@ -158,7 +175,7 @@ def repositories():
                     result.extend(p for p in sorted(owner.iterdir()) if (p / '.git').exists())
                 except OSError:
                     pass
-    return list(dict.fromkeys([Path(p) for p in state().get('projects', [])] + result))
+    return list(dict.fromkeys([Path(p) for p in account_projects(slot)] + result))
 
 
 def attach_sidebar(window, reload=False):
@@ -214,7 +231,7 @@ def restore_chats():
     selected = saved.get('selected', {}).copy()
     for slot in LABELS:
         for ident, record in records.get(slot, {}).items():
-            if record.get('open') and Path(record['cwd']).is_dir():
+            if record.get('open') and visible_record(record) and Path(record['cwd']).is_dir():
                 new_chat(slot, record['cwd'], record.get('title', 'New chat'), thread=ident, background=True)
         active = next((w for w in windows() if w['slot'] == slot and w.get('thread') == saved.get('active', {}).get(slot)), None)
         if active:
@@ -247,6 +264,13 @@ def new_chat(slot, path, title='New chat', thread=None, resume_picker=False, pro
                 focus(existing)
             return
     native = not (legacy or resume_picker or os.environ.get('CODEX_HUB_CHAT') == 'cli')
+    if native and not thread and not prompt:
+        records = state().get('chats', {}).get(slot, {})
+        blank = next((w for w in windows() if w['slot'] == slot and w['engine'] == 'tui' and w['path'] == str(path) and w['thread'] in records and not visible_record(records[w['thread']])), None)
+        if blank:
+            if not background:
+                focus(blank)
+            return
     args = [sys.executable, str(SELF), 'chat', slot, str(path), thread or ''] if native else [hub_config.executable(ROOT)]
     if not native and (thread or resume_picker):
         args += ['resume', thread or '--all']
@@ -258,7 +282,7 @@ def new_chat(slot, path, title='New chat', thread=None, resume_picker=False, pro
     wid = tmux('new-window', '-d', '-t', account_session(slot) + ':', '-c', path,
                '-n', title, '-P', '-F', '#{window_id}', shlex.join(env + args))
     for key, value in {'@hub_project': str(path), '@hub_kind': 'chat',
-                       '@hub_thread': thread or '', '@hub_engine': 'tui' if native else 'cli'}.items():
+                       '@hub_thread': thread or '', '@hub_engine': 'tui' if native else 'cli', '@hub_created': str(time.time())}.items():
         tmux('set-option', '-w', '-t', wid, key, value)
     tmux('set-option', '-w', '-t', wid, 'remain-on-exit', 'on')
     window = next(w for w in windows() if w['id'] == wid)
@@ -294,6 +318,10 @@ class Surface:
         self.message = ''
         self.hover = None
         self.cursors = {}
+        self.field_points, self.field_selection = {}, {}
+        self.drag_field = None
+        self.text_drag = self.text_selection = None
+        self.transcript_rows = {}
         self.palette = {}
         self.scroll_step = CONFIG.get('scrollLines', 1) if type(self).__name__ == 'Chat' else 3
         screen.keypad(True)
@@ -356,26 +384,39 @@ class Surface:
             self.text(y + row, x, ' ' * width, color, width)
         inner = max(1, width - 2)
         position = min(self.cursors.get(name, len(value)), len(value))
-        lines, line, caret = [], '', (0, 0)
+        from rich.cells import cell_len
+        lines, points = [''], []
+        row, col = 0, 0
         for index, char in enumerate(value):
-            if index == position:
-                caret = (len(lines), len(line))
-            if char == '\n' or len(line) == inner:
-                lines.append(line)
-                line = ''
-            if char != '\n':
-                line += char
-        lines.append(line)
-        if position == len(value):
-            caret = (len(lines) - 1, len(line))
+            size = cell_len(char) if char != '\n' else 0
+            if char != '\n' and col + size > inner:
+                lines.append('')
+                row, col = row + 1, 0
+            points.append((row, col, index))
+            if char == '\n':
+                lines.append('')
+                row, col = row + 1, 0
+            else:
+                lines[-1] += char
+                col += size
+        points.append((row, col, len(value)))
+        caret = next((r, c) for r, c, i in points if i == position)
         start = max(0, caret[0] - height + 1) if self.edit == name else max(0, len(lines) - height)
+        self.field_points[name] = [(y + r - start, x + 1 + c, i) for r, c, i in points if start <= r < start + height]
         if not value:
             lines = [placeholder]
         for offset, line in enumerate(lines[start:start + height]):
             self.text(y + offset, x + 1, line, color, width - 2)
+        low, high = sorted(self.field_selection.get(name, (position, position)))
+        for r, c, i in self.field_points[name]:
+            if low <= i < high and value[i] != '\n':
+                try:
+                    self.screen.addstr(r, c, value[i], curses.color_pair(4) | curses.A_REVERSE)
+                except curses.error:
+                    pass
         if self.edit == name:
             offset = max(0, min(height - 1, caret[0] - start))
-            cursor_x = x if not value else x + min(width - 2, 1 + caret[1])
+            cursor_x = x if not value else min(x + width - 2, x + 1 + caret[1])
             char = value[position] if position < len(value) and value[position] != '\n' else ' '
             try:
                 self.screen.addstr(y + offset, cursor_x, char, curses.color_pair(color) | curses.A_REVERSE)
@@ -386,7 +427,41 @@ class Surface:
     def begin(self):
         self.screen.erase()
         self.hits = []
+        self.field_points = {}
+        self.transcript_rows = {}
         return self.screen.getmaxyx()
+
+    def field_position(self, name, x, y):
+        points = self.field_points.get(name, [])
+        return min(points, key=lambda point: (abs(point[0] - y), abs(point[1] - x)))[2] if points else len(self.fields.get(name, ''))
+
+    def copy_text(self, value):
+        clipboard = ['pbcopy'] if sys.platform == 'darwin' else ['wl-copy'] if shutil.which('wl-copy') else ['xclip', '-selection', 'clipboard'] if shutil.which('xclip') else None
+        if clipboard and shutil.which(clipboard[0]):
+            subprocess.run(clipboard, input=value.encode(), check=True)
+        else:
+            tmux('set-buffer', value)
+        self.message = 'Copied selection.'
+
+    def selected_text(self):
+        if not self.text_selection:
+            return ''
+        (first_y, first_x), (last_y, last_x) = sorted(self.text_selection)
+        from rich.cells import cell_len
+        lines = []
+        for y in range(first_y, last_y + 1):
+            if y not in self.transcript_rows:
+                continue
+            left, text = self.transcript_rows[y]
+            low = first_x - left if y == first_y else 0
+            high = last_x - left if y == last_y else 100000
+            col, selected = 0, ''
+            for char in text:
+                if low <= col < high:
+                    selected += char
+                col += cell_len(char)
+            lines.append(selected.rstrip())
+        return '\n'.join(lines)
 
     def event(self):
         self.scroll_event = False
@@ -400,6 +475,8 @@ class Surface:
                 _, x, y, _, button = curses.getmouse()
             except curses.error:
                 return None
+            if button & (curses.BUTTON4_PRESSED | getattr(curses, 'BUTTON5_PRESSED', 0)):
+                self.text_selection = None
             if button & curses.BUTTON4_PRESSED:
                 self.offset = max(0, self.offset - self.scroll_step)
                 self.scroll_event = True
@@ -410,6 +487,39 @@ class Surface:
                 hit = next((action for top, left, height, width, action in reversed(self.hits)
                             if top <= y < top + height and left <= x < left + width), None)
                 self.hover = hit
+                motion = button & getattr(curses, 'REPORT_MOUSE_POSITION', 0)
+                release = button & curses.BUTTON1_RELEASED
+                press = button & curses.BUTTON1_PRESSED
+                if self.drag_field and (motion or release):
+                    name, anchor = self.drag_field
+                    position = self.field_position(name, x, y)
+                    self.cursors[name] = position
+                    self.field_selection[name] = (anchor, position)
+                    if release:
+                        self.drag_field, self.pressed = None, None
+                    return None
+                if press and hit and hit[0] == 'field':
+                    name = hit[1]
+                    position = self.field_position(name, x, y)
+                    self.edit, self.cursors[name] = name, position
+                    self.field_selection[name] = (position, position)
+                    self.drag_field = (name, position)
+                    self.text_selection = None
+                    return None
+                if press and y in self.transcript_rows and (not hit or hit[0] == 'link'):
+                    self.text_drag = (y, x)
+                    self.text_selection = None
+                    self.follow = False
+                elif self.text_drag and (motion or release):
+                    if (y, x) != self.text_drag:
+                        self.text_selection = (self.text_drag, (y, x))
+                    if release:
+                        self.text_drag = None
+                        if self.text_selection:
+                            self.pressed = None
+                            return ('copy-selection',)
+                    if motion:
+                        return None
                 track = self.pressed if self.pressed and self.pressed[0] == 'scroll-track' else hit if hit and hit[0] == 'scroll-track' else None
                 if track and (button & (curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED) or self.pressed and self.pressed[0] == 'scroll-track' and button & getattr(curses, 'REPORT_MOUSE_POSITION', 0)):
                     if button & curses.BUTTON1_PRESSED:
@@ -426,12 +536,14 @@ class Surface:
                 if clicked and hit:
                     if hit[0] == 'field':
                         self.edit = hit[1]
-                        self.cursors[self.edit] = len(self.fields.get(self.edit, ''))
+                        self.cursors[self.edit] = self.field_position(self.edit, x, y)
+                        self.field_selection[self.edit] = (self.cursors[self.edit], self.cursors[self.edit])
                     else:
                         self.edit = None
                         return hit
             return None
         if key == curses.KEY_RESIZE:
+            self.text_selection = None
             return ('resize',)
         if key == curses.KEY_PPAGE:
             return ('page', -1)
@@ -440,6 +552,19 @@ class Surface:
         if self.edit:
             value = self.fields.get(self.edit, '')
             position = min(self.cursors.get(self.edit, len(value)), len(value))
+            low, high = sorted(self.field_selection.get(self.edit, (position, position)))
+            replacing = key in (curses.KEY_BACKSPACE, curses.KEY_DC, '\x7f', '\b', '\n', '\r') or isinstance(key, str) and key.isprintable()
+            if low != high and replacing:
+                value = value[:low] + value[high:]
+                self.fields[self.edit], position = value, low
+                if key in (curses.KEY_BACKSPACE, curses.KEY_DC, '\x7f', '\b'):
+                    self.cursors[self.edit] = position
+                    self.field_selection[self.edit] = (position, position)
+                    return None
+            if key == '\x01':
+                self.field_selection[self.edit] = (0, len(value))
+                self.cursors[self.edit] = len(value)
+                return None
             if key in (curses.KEY_BACKSPACE, '\x7f', '\b'):
                 self.fields[self.edit] = value[:max(0, position - 1)] + value[position:]
                 position = max(0, position - 1)
@@ -466,6 +591,7 @@ class Surface:
                 position += len(key)
             if self.edit:
                 self.cursors[self.edit] = position
+                self.field_selection[self.edit] = (position, position)
         elif key == '\x1b':
             return ('cancel',)
         elif key == curses.KEY_DOWN:
@@ -484,6 +610,53 @@ class Surface:
                         and error.stderr else str(error))
 
 
+def usage_snapshot(slot):
+    folder = ROOT / 'usage'
+    folder.mkdir(mode=0o700, exist_ok=True)
+    cache = folder / (slot + '.json')
+    try:
+        return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def usage_label(cached):
+    snapshot = cached.get('snapshot', {})
+    if not snapshot:
+        return 'Usage unavailable' if cached.get('error') else 'Usage loading…'
+    percent = lambda value: '—' if value is None else str(round(value)) + '%'
+    minutes = snapshot.get('sessionWindowMins')
+    short_label = str(round(minutes / 60)) + 'h' if minutes else 'Session'
+    return short_label + ' ' + percent(snapshot.get('sessionRemainingPercent')) + ' · Week ' + percent(snapshot.get('remainingPercent')) + (' !' if cached.get('error') else '')
+
+
+def refresh_usage(slot):
+    folder = ROOT / 'usage'
+    folder.mkdir(mode=0o700, exist_ok=True)
+    with (folder / (slot + '.lock')).open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        previous = usage_snapshot(slot)
+        if time.time() - previous.get('checkedAt', 0) < 60:
+            return
+        try:
+            result = subprocess.run([sys.executable, str(SELF.parent / 'codex-hub-usage'), slot],
+                                    text=True, capture_output=True, timeout=35)
+            snapshot = json.loads(result.stdout)['accounts'][slot]
+            if snapshot.get('error'):
+                raise RuntimeError(snapshot['error'])
+            value = {'checkedAt': time.time(), 'snapshot': snapshot}
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.TimeoutExpired) as error:
+            value = {**previous, 'checkedAt': time.time(), 'error': str(error) if isinstance(error, RuntimeError) else type(error).__name__}
+        with tempfile.NamedTemporaryFile('w', dir=folder, delete=False) as out:
+            json.dump(value, out)
+            temporary = Path(out.name)
+        temporary.chmod(0o600)
+        temporary.replace(folder / (slot + '.json'))
+
+
 class Sidebar(Surface):
     def fit(self):
         pane = os.environ['TMUX_PANE']
@@ -496,7 +669,14 @@ class Sidebar(Surface):
     def refresh(self):
         reload_config()
         self.data = state()
-        self.live = [w for w in windows() if w['slot'] == self.slot]
+        self.usage = usage_snapshot(self.slot)
+        clients = tmux('list-clients', '-F', '#{session_name}')
+        worker = getattr(self, 'usage_worker', None)
+        if account_session(self.slot) in clients.splitlines() and time.time() - self.usage.get('checkedAt', 0) >= 60 and (not worker or not worker.is_alive()):
+            self.usage_worker = threading.Thread(target=refresh_usage, args=(self.slot,), daemon=True)
+            self.usage_worker.start()
+        self.live = sorted([w for w in windows() if w['slot'] == self.slot], key=lambda w: float(w['created'] or int(w['id'][1:])), reverse=True)
+        self.live = [w for w in self.live if w['kind'] != 'chat' or w['engine'] != 'tui' or visible_record(self.data.get('chats', {}).get(self.slot, {}).get(w['thread'], {}))]
         self.saved, self.history_error = history(self.slot)
         self.pins = self.data.get('pins', {}).get(self.slot, [])
         names = self.data.get('names', {}).get(self.slot, {})
@@ -504,7 +684,7 @@ class Sidebar(Surface):
             row['title'] = names.get(row['id'], row['title'])
         self.selected = self.data.get('selected', {}).get(self.slot)
         self.collapsed = self.data.get('collapsed', {}).get(self.slot, [])
-        self.projects = list(dict.fromkeys([*self.data.get('projects', []),
+        self.projects = list(dict.fromkeys([*account_projects(self.slot, self.data),
                             *(w['path'] for w in self.live if w['path']),
                             *(r['cwd'] for r in self.saved)]))
         self.current = next((w['id'] for w in self.live if w['sidebar'] == os.environ.get('TMUX_PANE')), '')
@@ -532,8 +712,15 @@ class Sidebar(Surface):
                     continue
             rows.append(('folder', path, None))
             if path not in self.collapsed or query:
-                rows += [('live', w['name'], w) for w in live if pin_key(w) not in self.pins]
-                rows += [('saved', r['title'] or 'Untitled chat', r) for r in saved if r['id'] not in self.pins]
+                chats = [('live', w['name'], w) for w in live if pin_key(w) not in self.pins]
+                chats += [('saved', r['title'] or 'Untitled chat', r) for r in saved if r['id'] not in self.pins]
+                def recency(entry):
+                    kind, _, row = entry
+                    if kind == 'saved':
+                        return row.get('updated_at', 0)
+                    record = self.data.get('chats', {}).get(self.slot, {}).get(row['thread'], {})
+                    return max(float(row['created'] or 0), record.get('updated_at', 0))
+                rows += sorted(chats, key=recency, reverse=True)
                 if not live and not saved:
                     rows.append(('empty', 'No chats yet', None))
         terminals = [w for w in self.live if w['kind'] not in ('home', 'chat')]
@@ -594,9 +781,12 @@ class Sidebar(Surface):
             self.button(h - 6, 2, w - 4, '↻ Update this chat', ('upgrade',), quiet=True, align='left')
         self.divider(h - 5, 2, w - 4)
         self.button(h - 4, 2, w - 4, LABELS[self.slot][0] + ' · Settings', ('settings',), quiet=True, align='left')
-        self.text(h - 3, 2, self.shorten(LABELS[self.slot][1], w - 4), 2, w - 4)
+        snapshot = self.usage.get('snapshot', {})
+        self.button(h - 3, 2, w - 4, usage_label(self.usage), ('usage',), quiet=True, align='left')
+        if self.hover == ('usage',):
+            self.text(h - 6, 2, 'Remaining · ' + (snapshot.get('observedAt', '')[:16] or self.usage.get('error', 'Fetching…')), 2, w - 4)
         self.text(h - 2, 2, 'v' + hub_config.VERSION, 2)
-        self.button(h - 2, w // 2 + 1, w // 2 - 3, 'Detach', ('detach',), quiet=True)
+        self.button(h - 2, w // 2 + 1, w // 2 - 3, '⏻ Exit', ('exit',), quiet=True)
 
     def run(self):
         self.fit()
@@ -616,7 +806,11 @@ class Sidebar(Surface):
                 if kind == 'resize':
                     self.fit()
                 elif kind == 'account':
-                    tmux('switch-client', '-t', account_session(action[1]))
+                    target = next(w for w in windows() if w['slot'] == action[1] and w['id'] == tmux('display-message', '-p', '-t', account_session(action[1]) + ':', '#{window_id}'))
+                    focus(target)
+                elif kind == 'usage':
+                    snapshot = self.usage.get('snapshot', {})
+                    self.message = 'Remaining · verified ' + str(snapshot.get('observedAt') or self.usage.get('error') or 'Fetching…')
                 elif kind in ('settings', 'choose-account'):
                     self.popup('settings')
                 elif kind == 'clear-search':
@@ -648,7 +842,7 @@ class Sidebar(Surface):
                     self.popup('manage', self.upgrade['id'])
                 elif kind == 'home':
                     focus(next(w for w in self.live if w['kind'] == 'home'))
-                elif kind == 'detach':
+                elif kind == 'exit':
                     tmux('detach-client')
                 self.refresh()
             except (OSError, ValueError, subprocess.CalledProcessError) as error:
@@ -657,7 +851,7 @@ class Sidebar(Surface):
 
 class Picker(Surface):
     def run(self, purpose):
-        self.paths = repositories()
+        self.paths = repositories(self.slot)
         self.folder = Path.home()
         self.tab = 'projects'
         self.chosen = None
@@ -821,8 +1015,12 @@ class Chat(Surface):
                     pins.append(self.ident)
         update_state(migrate)
         title = tmux('display-message', '-p', '-t', self.window_id, '#{window_name}')
-        update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).update({self.ident: {
-            'cwd': path, 'title': title, 'open': True, 'updated_at': int(time.time())}}))
+        has_content = any(item.get('type') == 'userMessage' for turn in self.snapshot['thread'].get('turns', []) for item in turn.get('items', []))
+        def opened(data):
+            record = data.setdefault('chats', {}).setdefault(self.slot, {}).setdefault(self.ident, {})
+            record.update(cwd=path, title=title, open=True, has_content=has_content or record.get('has_content', False))
+            record.setdefault('updated_at', time.time())
+        update_state(opened)
         if tmux('display-message', '-p', '-t', self.window_id, '#{window_active}') == '1':
             update_state(lambda data: data.setdefault('active', {}).update({self.slot: self.ident}))
         saved = self.runtime.saved.get('draft', {})
@@ -847,6 +1045,7 @@ class Chat(Surface):
             if value != self.runtime.saved.get('draft'):
                 self.runtime.saved['draft'] = json.loads(json.dumps(value))
                 self.runtime.persist()
+                update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).get(self.ident, {}).update(has_draft=bool(value['text'].strip() or value['images'])))
         finally:
             self.runtime.lock.release()
 
@@ -970,9 +1169,11 @@ class Chat(Surface):
         self.button(0, 1, 4, '☰', ('sidebar',), quiet=True)
         self.button(0, 6, 4, '▣', ('select',), quiet=True)
         self.button(0, 11, 4, '⧉', ('copy',), quiet=True)
-        self.button(0, w - 6, 5, 'ⓘ', ('details',), quiet=True)
+        self.button(0, w - 16, 5, 'ⓘ', ('details',), quiet=True)
+        self.button(0, w - 11, 5, '×', ('close',), quiet=True)
+        self.button(0, w - 6, 5, '⏻', ('exit',), quiet=True)
         name = state().get('names', {}).get(self.slot, {}).get(self.ident) or self.snapshot.get('thread', {}).get('name') or 'New chat'
-        self.text(0, 17, self.shorten(name, w - 24), bold=True)
+        self.text(0, 17, self.shorten(name, max(0, w - 35)), bold=True)
         right = 27 if self.details and w >= 85 else 0
         end = w - right
         width = max(20, min(90, end - 6))
@@ -1009,6 +1210,7 @@ class Chat(Surface):
             self.offset = max(0, len(lines) - available)
         self.offset = min(max(0, self.offset), max(0, len(lines) - available))
         for y, (text, color, action) in enumerate(lines[self.offset:self.offset + available], 5):
+            self.transcript_rows[y] = (left, ''.join(segment.text for segment in text if not segment.control) if color == 'markdown' else text)
             if color == 'markdown':
                 self.draw_markdown(y, left, text, width)
                 continue
@@ -1016,6 +1218,16 @@ class Chat(Surface):
             self.text(y, left + indent, text[indent:].ljust(width - indent) if color in (7, 8) else text, color, width - indent)
             if action:
                 self.hits.append((y, left, 1, width, action))
+        if self.text_selection:
+            (first_y, first_x), (last_y, last_x) = sorted(self.text_selection)
+            for y in range(max(5, first_y), min(bottom, last_y + 1)):
+                start = max(left, first_x if y == first_y else left)
+                stop = min(left + width, last_x if y == last_y else left + width)
+                if stop > start:
+                    try:
+                        self.screen.chgat(y, start, stop - start, curses.color_pair(4) | curses.A_REVERSE)
+                    except curses.error:
+                        pass
         if len(lines) > available:
             track_x = end - 2
             thumb_height = max(1, round(available * available / len(lines)))
@@ -1039,16 +1251,23 @@ class Chat(Surface):
         self.button(bottom, left + width - 19, 19, '◇ ' + mode_label + ' ▾', ('approval-mode',), quiet=True)
         self.panel(bottom + 1, left, width, 5)
         self.field('prompt', bottom + 2, left + 1, width - 2, 'Message Codex…', height=3)
-        model_width = min(25, max(8, width - 25))
+        composing = bool(self.fields.get('prompt', '').strip() or self.images)
+        active_composer = bool(self.snapshot.get('active') and composing)
+        model_width = min(25, max(8, width - (30 if active_composer else 25)))
         self.button(h - 3, left, model_width, self.shorten((self.model or 'Model') + ' ▾', model_width), ('model',), quiet=True)
         self.button(h - 3, left + model_width + 1, 9, (self.effort or 'Effort') + ' ▾', ('effort',), quiet=True)
-        self.button(h - 3, left + width - 13, 4, '◔', ('context',), quiet=True)
+        self.button(h - 3, left + width - (18 if active_composer else 13), 4, '◔', ('context',), quiet=True)
+        composing = bool(self.fields.get('prompt', '').strip() or self.images)
         if self.snapshot.get('active'):
-            self.button(h - 2, left + width - 11, 4, '↳', ('steer',), quiet=True)
-            self.button(h - 2, left + width - 6, 5, '■', ('stop',), quiet=True)
-        self.button(h - 3, left + width - 6, 5, '↑', ('send',), True)
+            if composing:
+                self.button(h - 3, left + width - 11, 4, '■', ('stop',), quiet=True)
+                self.button(h - 2, left + width - 11, 4, '↳', ('steer',), quiet=True)
+            else:
+                self.button(h - 3, left + width - 6, 5, '■', ('stop',), True)
+        if composing or not self.snapshot.get('active'):
+            self.button(h - 3, left + width - 6, 5, '↑', ('send',), True)
         hints = {'sidebar': 'Toggle sidebar', 'select': 'Select text · drag in tmux selection mode', 'copy': 'Copy latest response',
-                 'details': 'Chat details', 'latest': 'Jump to latest response', 'queue': 'Review queued messages', 'attach': 'Attach image', 'images': 'Preview attached images',
+                 'details': 'Chat details', 'close': 'Close this chat', 'exit': 'Exit Hub · work keeps running', 'latest': 'Jump to latest response', 'queue': 'Review queued messages', 'attach': 'Attach image', 'images': 'Preview attached images',
                  'approval-mode': 'Approval mode · applies next turn', 'steer': 'Send now · steer current turn', 'stop': 'Stop current turn', 'send': 'Queue message' if self.snapshot.get('active') else 'Send message'}
         hover_help = hints.get(self.hover[0], '') if self.hover else ''
         self.text(h - 1, 1, self.message or self.snapshot.get('error') or ('Connecting…' if not self.ready else 'Queue paused · click ≡ to review and resume' if self.snapshot.get('paused') and count else hover_help), 6 if self.message or self.snapshot.get('error') else 2, w - 2)
@@ -1056,6 +1275,8 @@ class Chat(Surface):
             self.button(h - 2, left, 12, 'Retry', ('retry',))
         if self.pending:
             self.text(h - 2, left, 'Working on your action…', 2, width - 20)
+        if self.sidebar_hidden:
+            self.text(h - 2, left, usage_label(self.cached_usage), 2, width - 15)
         if self.hover == ('context',):
             self.context_popup(h - 12, max(1, left + width - 36), min(36, width))
         prompt = self.fields.get('prompt', '')
@@ -1101,6 +1322,7 @@ class Chat(Surface):
             raise ValueError('Unsupported slash command. Use /help or open this chat in Codex CLI for CLI-specific commands.')
         self.fields['prompt'] = ''
         self.cursors['prompt'] = 0
+        self.field_selection['prompt'] = (0, 0)
         actions = {'/model': 'model', '/approvals': 'approval-mode', '/permissions': 'approval-mode', '/compact': 'context', '/stop': 'stop', '/queue': 'queue', '/pin': 'pin'}
         if command in actions:
             return actions[command]
@@ -1173,6 +1395,8 @@ class Chat(Surface):
         original = dict(self.fields)
         original_edit = self.edit
         original_cursors = dict(self.cursors)
+        original_selection = dict(self.field_selection)
+        self.field_selection['prompt'] = (len(text), len(text))
         self.fields['prompt'], self.edit = text, 'prompt'
         self.cursors['prompt'] = len(text)
         result = None
@@ -1187,6 +1411,7 @@ class Chat(Surface):
                 result = self.fields.get('prompt', '') if action == ('save',) else None
                 break
         self.fields, self.edit, self.cursors = original, original_edit, original_cursors
+        self.field_selection = original_selection
         return result
 
     def image_picker(self):
@@ -1367,12 +1592,13 @@ class Chat(Surface):
                     return
 
     def name_from_prompt(self, prompt):
+        update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).get(self.ident, {}).update(has_content=True, updated_at=time.time()))
         current = tmux('display-message', '-p', '-t', self.window_id, '#{window_name}')
         title = prompt.strip().splitlines()[0][:60] if prompt.strip() and current == 'New chat' else current
         if title != 'New chat':
             tmux('rename-window', '-t', self.window_id, title)
             update_state(lambda data: (data.setdefault('names', {}).setdefault(self.slot, {}).setdefault(self.ident, title),
-                                      data.setdefault('chats', {}).setdefault(self.slot, {}).get(self.ident, {}).update({'title': title})))
+                                      data.setdefault('chats', {}).setdefault(self.slot, {}).get(self.ident, {}).update({'title': title, 'has_content': True, 'updated_at': time.time()})))
 
     def open_cli(self):
         if self.snapshot.get('active') or self.snapshot.get('queue'):
@@ -1402,6 +1628,7 @@ class Chat(Surface):
         self.approval_mode = 'ask'
         self.backend_binary, self.backend_version = '', ''
         self.last_preferences = 0
+        self.cached_usage, self.sidebar_hidden = {}, False
         self.busy_status = None
         self.expanded = set()
         self.executor = ThreadPoolExecutor(max_workers=1)
@@ -1427,6 +1654,7 @@ class Chat(Surface):
                             if self.fields.get('prompt', '') == self.submitted[0]:
                                 self.fields['prompt'] = ''
                                 self.cursors['prompt'] = 0
+                                self.field_selection['prompt'] = (0, 0)
                             if self.images == self.submitted[1]:
                                 self.images = []
                         self.message = ''
@@ -1447,6 +1675,8 @@ class Chat(Surface):
                 self.save_draft()
                 if time.monotonic() - self.last_preferences > 2:
                     self.scroll_step = hub_config.load(ROOT).get('scrollLines', 1)
+                    self.cached_usage = usage_snapshot(self.slot)
+                    self.sidebar_hidden = tmux('show-option', '-wv', '-t', os.environ['TMUX_PANE'], '@hub_sidebar_hidden', check=False) == '1'
                     self.last_preferences = time.monotonic()
                 busy = bool(self.pending or self.snapshot.get('active') or self.snapshot.get('requests'))
                 if self.ready and busy != self.busy_status:
@@ -1485,14 +1715,28 @@ class Chat(Surface):
                         self.follow = self.offset >= self.max_scroll
                     elif kind == 'select':
                         tmux('copy-mode', '-t', os.environ['TMUX_PANE'])
+                    elif kind == 'copy-selection':
+                        selected = self.selected_text()
+                        if selected:
+                            self.copy_text(selected)
                     elif kind == 'copy':
-                        self.copy_response()
+                        if self.field_selection.get('prompt') and self.field_selection['prompt'][0] != self.field_selection['prompt'][1]:
+                            low, high = sorted(self.field_selection['prompt'])
+                            self.copy_text(self.fields['prompt'][low:high])
+                        elif self.text_selection:
+                            self.copy_text(self.selected_text())
+                        else:
+                            self.copy_response()
                     elif kind == 'sidebar':
                         pane = os.environ['TMUX_PANE']
                         hidden = tmux('show-option', '-wv', '-t', pane, '@hub_sidebar_hidden', check=False) == '1'
                         tmux('set-option', '-w', '-t', pane, '@hub_sidebar_hidden', '0' if hidden else '1')
                         side = tmux('show-option', '-wv', '-t', pane, '@hub_sidebar')
                         tmux('resize-pane', '-t', side, '-x', '36' if hidden else '1')
+                    elif kind == 'exit':
+                        tmux('detach-client')
+                    elif kind == 'close':
+                        self.popup('manage', self.window_id)
                     elif kind == 'details':
                         if self.screen.getmaxyx()[1] < 85 and self.ready:
                             selected = self.choice('Chat details', [('Pin / unpin chat', 'pin'), ('Open in Codex CLI', 'cli')])
@@ -1711,10 +1955,9 @@ class Manage(Surface):
             if action == ('close',) and window:
                 if confirming:
                     home = next(w for w in windows() if w['slot'] == self.slot and w['kind'] == 'home')
-                    focus(home)
                     if window.get('thread'):
                         update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).get(window['thread'], {}).update({'open': False}))
-                    tmux('kill-window', '-t', wid)
+                    subprocess.run(['tmux', '-S', str(SOCKET), 'select-window', '-t', home['id'], ';', 'kill-window', '-t', wid], check=True)
                     return
                 confirming = True
 

@@ -37,7 +37,8 @@ class HubIntegration(unittest.TestCase):
         cls.fakebin = cls.root / 'bin'
         cls.fakebin.mkdir()
         fake = cls.fakebin / 'codex'
-        fake.write_text('#!/usr/bin/env python3\nimport os,json,time\nfrom pathlib import Path\n'
+        fake.write_text('#!/usr/bin/env python3\nimport os,json,time,sys\nfrom pathlib import Path\n'
+                        'if "app-server" in sys.argv: os.execv(sys.executable,[sys.executable,' + repr(str(REPO / 'tests/fake_codex.py')) + '])\n'
                         'p=Path(os.environ["CODEX_HOME"])/"invoked.json"\n'
                         'p.write_text(json.dumps({"home":str(p.parent),"cwd":os.getcwd(),'
                         '"args":__import__("sys").argv[1:],"api":os.environ.get("OPENAI_API_KEY")}))\n'
@@ -171,7 +172,8 @@ class HubIntegration(unittest.TestCase):
         self.assertEqual(original_pid, hub.tmux('display-message', '-p', '-t', resumed['pane'], '#{pane_pid}'))
         self.assertEqual(hub.tmux('display-message', '-p', '-t', resumed['pane'], '#{pane_dead}'), '0')
         # New chat is second live row. Click original and verify switch, not duplicate resume.
-        self.sidebar_click('2', 8, 13)
+        capture = subprocess.run(['tmux', '-S', str(hub.SOCKET), 'capture-pane', '-p', '-t', self.account_window('2')['sidebar']], text=True, capture_output=True, check=True).stdout.splitlines()
+        self.sidebar_click('2', 8, next(i for i, line in enumerate(capture) if 'Saved in 2' in line))
         self.wait_for(lambda: self.account_window('2')['id'] == resumed['id'])
         self.assertEqual(len([w for w in hub.windows() if w['kind'] == 'chat']), 2)
         # Clicking folder collapses/expands its chats.

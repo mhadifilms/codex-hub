@@ -60,7 +60,9 @@ for line in sys.stdin:
     if not method or 'id' not in request:
         continue
     result = {}
-    if method == 'model/list':
+    if method == 'account/rateLimits/read':
+        result = {'rateLimits': {'primary': {'usedPercent': 23, 'windowDurationMins': 300, 'resetsAt': int(time.time()) + 3600}, 'secondary': {'usedPercent': 38, 'windowDurationMins': 10080, 'resetsAt': int(time.time()) + 86400}}}
+    elif method == 'model/list':
         model_pairs = [('demo-model', 'Demo model'), ('demo-lite', 'Demo lite')] if (home / 'demo-mode').exists() else [('fixture-sol', 'Fixture Sol'), ('fixture-luna', 'Fixture Luna')]
         result = {'data': [{'model': name, 'displayName': label, 'isDefault': n == 0,
                            'defaultReasoningEffort': 'high',
