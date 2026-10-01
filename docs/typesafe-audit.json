@@ -290,27 +290,25 @@
     },
     "interaction": {
       "group": "interaction",
-      "stage": "final",
+      "stage": "release",
       "sources": {
-        "bin/codex-hub-tui": "ec629c591f0c06564ef99aeaea0c10c06989179dbe70916e0480436715062c3b",
-        "tests/test_enter_queue.py": "e536efb9160a978810f63abac09a430403456baafe0548256dfae7b535e6a274",
-        "tests/test_scrolling.py": "f8bcafe3ba9472b6be550471e7cf31b4e6d4c1653ac60fe87c75ce3aef70af5b"
+        "bin/codex-hub-tui": "83931d2bf5556927a03db3f74806d5a0189a653464783f555155909a2ff07097"
       },
-      "seconds": 0.39,
+      "seconds": 0.35,
       "result": {
         "model": "jev-1.13.0",
         "answers": {
           "queue_duplicates": {
             "type": "noul",
-            "noul": 0.21
+            "noul": 0.3
           },
           "paste_send": {
             "type": "noul",
-            "noul": 0.13
+            "noul": 0.27
           },
           "scroll_anchor": {
             "type": "noul",
-            "noul": 0.88
+            "noul": 0.66
           },
           "selection": {
             "type": "noul",
@@ -318,15 +316,15 @@
           },
           "details": {
             "type": "noul",
-            "noul": 0.91
+            "noul": 0.92
           },
           "permission_ui": {
             "type": "noul",
-            "noul": 0.93
+            "noul": 0.91
           },
           "models": {
             "type": "noul",
-            "noul": 0.92
+            "noul": 0.94
           },
           "full_image": {
             "type": "noul",
@@ -334,32 +332,32 @@
           },
           "slash": {
             "type": "noul",
-            "noul": 0.84
+            "noul": 0.85
           }
         },
         "usage": {
-          "input_tokens": 33449,
+          "input_tokens": 31712,
           "output_tokens": 153
         }
       }
     },
     "lifecycle": {
       "group": "lifecycle",
-      "stage": "final",
+      "stage": "release",
       "sources": {
-        "bin/codex-hub-tui": "ec629c591f0c06564ef99aeaea0c10c06989179dbe70916e0480436715062c3b"
+        "bin/codex-hub-tui": "83931d2bf5556927a03db3f74806d5a0189a653464783f555155909a2ff07097"
       },
-      "seconds": 0.35,
+      "seconds": 0.33,
       "result": {
         "model": "jev-1.13.0",
         "answers": {
           "empty_history": {
             "type": "noul",
-            "noul": 0.26
+            "noul": 0.28
           },
           "close_race": {
             "type": "noul",
-            "noul": 0.7
+            "noul": 0.71
           },
           "archive_discoverable": {
             "type": "noul",
@@ -367,7 +365,7 @@
           },
           "delete_discoverable": {
             "type": "noul",
-            "noul": 0.47
+            "noul": 0.44
           },
           "right_click": {
             "type": "noul",
@@ -379,15 +377,15 @@
           },
           "recency": {
             "type": "noul",
-            "noul": 0.86
+            "noul": 0.85
           },
           "restore": {
             "type": "noul",
-            "noul": 0.82
+            "noul": 0.83
           }
         },
         "usage": {
-          "input_tokens": 31565,
+          "input_tokens": 31688,
           "output_tokens": 146
         }
       }
