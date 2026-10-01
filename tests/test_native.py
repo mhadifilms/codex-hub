@@ -47,16 +47,20 @@ class NativeIntegration(test_hub.HubIntegration):
 
     @classmethod
     def click_text(cls, label):
+        position = None
+        def locate():
+            nonlocal position
+            for y, line in enumerate(cls.capture().splitlines()):
+                if label in line:
+                    position = (line.index(label) + 1, y)
+                    return True
+            return False
         try:
-            cls.wait_for(lambda: label in cls.capture())
+            cls.wait_for(locate)
         except AssertionError:
             print('CHAT CAPTURE:', cls.capture())
             raise
-        for y, line in enumerate(cls.capture().splitlines()):
-            if label in line:
-                cls.chat_click(line.index(label) + 1, y)
-                return
-        raise AssertionError(label)
+        cls.chat_click(*position)
 
     @classmethod
     def rpc(cls):
