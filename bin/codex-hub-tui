@@ -487,11 +487,17 @@ class Surface:
         self.hits.append((y, x, height, width, ('field', name)))
 
     def begin(self):
+        size = self.screen.getmaxyx()
+        if size != getattr(self, '_draw_size', None):
+            # tmux preserves cells when a pane grows. Invalidate curses'
+            # physical-screen cache so old controls cannot remain as ghosts.
+            self.screen.clearok(True)
+            self._draw_size = size
         self.screen.erase()
         self.hits = []
         self.field_points = {}
         self.transcript_rows = {}
-        return self.screen.getmaxyx()
+        return size
 
     def field_position(self, name, x, y):
         points = self.field_points.get(name, [])

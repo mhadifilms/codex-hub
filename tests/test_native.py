@@ -67,7 +67,7 @@ class NativeIntegration(test_hub.HubIntegration):
             lines = cls.capture().splitlines()
             # tmux resizes immediately; curses repaints on its next event.
             # Wait for the header to match the new pane before locating a hit.
-            if label in ('···', '☰') and (not lines or not width - 6 <= lines[0].find('×') <= width - 3):
+            if label in ('···', '☰') and (not lines or not width - 6 <= lines[0].rfind('×') <= width - 3):
                 return False
             for y, line in enumerate(lines):
                 if label in line:
