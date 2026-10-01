@@ -29,11 +29,16 @@ class Rpc:
         self.lock = threading.Lock()
         self.events = queue.Queue()
         self.callback = callback
-        threading.Thread(target=self.read, daemon=True).start()
+        self.reader = threading.Thread(target=self.read, daemon=True)
+        self.reader.start()
         threading.Thread(target=self.dispatch, daemon=True).start()
-        self.call('initialize', {'clientInfo': {'name': 'codex_hub', 'title': 'Codex Hub', 'version': VERSION},
-                                 'capabilities': {'experimentalApi': True}})
-        self.write({'method': 'initialized', 'params': {}})
+        try:
+            self.call('initialize', {'clientInfo': {'name': 'codex_hub', 'title': 'Codex Hub', 'version': VERSION},
+                                     'capabilities': {'experimentalApi': True}})
+            self.write({'method': 'initialized', 'params': {}})
+        except Exception:
+            self.close()
+            raise
 
     def write(self, data):
         with self.lock:
@@ -85,12 +90,20 @@ class Rpc:
                 return
 
     def close(self):
-        self.process.terminate()
+        if self.process.poll() is None:
+            self.process.terminate()
         try:
             self.process.wait(timeout=3)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
+        # Closing a process does not close its Python pipe objects. Wait for
+        # the reader to consume EOF before releasing its stream.
+        with self.lock:
+            self.process.stdin.close()
+        if threading.current_thread() is not self.reader:
+            self.reader.join(timeout=3)
+        self.process.stdout.close()
 
 
 class Hub:
