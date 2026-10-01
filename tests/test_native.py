@@ -63,7 +63,13 @@ class NativeIntegration(test_hub.HubIntegration):
         position = None
         def locate():
             nonlocal position
-            for y, line in enumerate(cls.capture().splitlines()):
+            width = int(hub.tmux('display-message', '-p', '-t', cls.chat['pane'], '#{pane_width}'))
+            lines = cls.capture().splitlines()
+            # tmux resizes immediately; curses repaints on its next event.
+            # Wait for the header to match the new pane before locating a hit.
+            if label in ('···', '☰') and (not lines or not width - 6 <= lines[0].find('×') <= width - 3):
+                return False
+            for y, line in enumerate(lines):
                 if label in line:
                     position = (line.index(label) + 1, y)
                     return True

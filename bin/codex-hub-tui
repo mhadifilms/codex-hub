@@ -388,13 +388,9 @@ class Surface:
         screen.keypad(True)
         screen.timeout(600)
         curses.curs_set(0)
-        # Handle press/release directly: curses click synthesis delays presses
-        # and can swallow the first movement of a text selection.
-        curses.mouseinterval(0)
-        curses.mousemask(curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED |
-                         curses.BUTTON3_PRESSED | curses.BUTTON3_RELEASED |
-                         curses.BUTTON4_PRESSED | getattr(curses, 'BUTTON5_PRESSED', 0) |
-                         getattr(curses, 'REPORT_MOUSE_POSITION', 0))
+        # A short click interval recognizes quick clicks without delaying drags.
+        curses.mouseinterval(25)
+        curses.mousemask(curses.ALL_MOUSE_EVENTS | getattr(curses, 'REPORT_MOUSE_POSITION', 0))
         if curses.has_colors():
             curses.start_color()
             # Grayscale surfaces follow the app hierarchy: darker navigation,
@@ -716,6 +712,9 @@ class Surface:
         original_edit, self.edit = self.edit, None
         original_offset, hits = self.offset, self.hits
         self.context_active = True
+        # Menus have click targets only; allow curses to combine a quick
+        # press/release even when the menu redraws between the two events.
+        curses.mouseinterval(100)
         try:
             while True:
                 self.offset = original_offset
@@ -735,6 +734,7 @@ class Surface:
                 if action and action[0] in ('cancel', 'context-menu'):
                     return None
         finally:
+            curses.mouseinterval(25)
             self.context_active = False
             self.offset, self.edit, self.hits = original_offset, original_edit, hits
 
