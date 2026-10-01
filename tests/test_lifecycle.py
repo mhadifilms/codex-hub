@@ -32,6 +32,10 @@ class Lifecycle(test_native.NativeIntegration):
             time.sleep(.05)
             os.write(cls.fd, f'\x1b[<2;{x};{y}m'.encode())
         else:
+            if subprocess.check_output(['tmux', '-V'], text=True).strip() == 'tmux 3.4':
+                # tmux 3.4 drops a changed-button press within its 300 ms
+                # double-click timer. Exercise its documented slow-click path.
+                time.sleep(.35)
             cls.click(*position)
 
     def test_mouse_workflow_and_isolation(self):

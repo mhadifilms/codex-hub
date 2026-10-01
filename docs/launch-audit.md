@@ -25,4 +25,6 @@ An oversized lifecycle request was rejected by the service. Retried that group w
 
 ## Limits
 
+tmux 3.4 can suppress the first left press shortly after a right click. The Linux lifecycle test waits for that version's 300 ms click timer; it does not establish rapid button-change reliability. Use the regular chat controls, pause briefly, or upgrade tmux. See the [tmux 3.4 input implementation](https://github.com/tmux/tmux/blob/3.4/server-client.c#L589-L627).
+
 Behavioral tests use a deterministic local backend rather than live inference. Protocol shapes were checked against Codex CLI 0.159.2. Windows support is through WSL, not a Win32 curses port. Terminal font rendering and modified-key reporting vary by emulator. Images open their original files in a system viewer. Passing tests and model judgments do not guarantee every terminal/backend combination.

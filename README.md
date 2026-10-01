@@ -113,6 +113,8 @@ Existing chats keep their running frontend until reloaded. Stop active work, the
 
 ## Terminal compatibility
 
+tmux **3.4** can lose the first click when selecting immediately after a right click. Pause briefly before selecting, click again, or upgrade tmux (`brew upgrade tmux` with Homebrew). The regular **···** chat controls remain available. Linux CI exercises the slower click path on that version.
+
 The terminal controls fonts and line spacing. Clipboard support uses `pbcopy`, Windows PowerShell under WSL, `wl-copy`, or `xclip`; tmux provides a copy buffer fallback. Image preview opens an external viewer. Desktop voice, embedded browser/editor panels, clipboard-image paste, and desktop-only plugins are not supported.
 
 Codex Hub talks to the installed app-server through stdin/stdout. Models and protocol capabilities follow that CLI and the signed-in account. Run `codex-hub doctor` to diagnose an unexpected catalog or connection failure. Set `codexBinary` in config, or `CODEX_HUB_CODEX`, to select another executable.
