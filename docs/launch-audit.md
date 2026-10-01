@@ -7,7 +7,7 @@ Reviewed the terminal UI, conversation lifecycle, queues and permissions, stdio 
 - Prevent database-excluded empty and archived chats from returning through the saved-record fallback.
 - Close tabs through one tmux command, mark them closed before shutdown, and guard against the frontend reopening its record.
 - Add right-click menus, archive/restore, and confirmed deletion of backend conversation history. Failed backend changes retain local metadata; project files are kept.
-- Replace an unavailable curses window method and reflow menus during pane resizing.
+- Replace an unavailable curses window method, invalidate the physical screen cache during pane resizing, and forward mouse button releases to the application.
 - Recover known unsent drafts whose backend thread was never persisted, preserving text and settings without sending a turn. Missing content-bearing conversations are reported instead of replaced.
 - Close app-server pipes, including failed initialization paths.
 - Add dependency setup, custom-prefix install/upgrade/uninstall checks, and Windows/WSL installation with literal Windows clipboard and link commands.
@@ -17,9 +17,9 @@ Reviewed the terminal UI, conversation lifecycle, queues and permissions, stdio 
 
 Used the `typesafe-ai` workflow with `jev-latest` (returned model `jev-1.13.0`) for 35 independent Noul propositions across five source bundles. [Sanitized results](typesafe-audit.json) include source hashes, model identifiers, usage, and answers before and after the implementation pass. Authentication remained in the local Keychain; only public application source was supplied.
 
-These are advisory probability judgments, not runtime test results or an overall pass score. Positive and negative propositions have different meanings. Examples from the final source pass: right-click discoverability 0.89, archive/restore 0.91, scrolling anchors 0.89, composer selection 0.94, installed model catalog 0.92, and native Markdown 0.92.
+These are advisory probability judgments, not runtime test results or an overall pass score. Positive and negative propositions have different meanings. Examples from the final source pass: right-click discoverability 0.91, archive/restore 0.91, scrolling anchors 0.88, composer selection 0.95, installed model catalog 0.92, and native Markdown 0.92.
 
-The model remained uncertain about the close race (negative proposition 0.72) and whole-conversation deletion (positive proposition 0.49). Independently inspected the shutdown guards and verified close/delete behavior, delete cancellation, backend-error retention, and restart exclusions through real mouse input. Its low macOS/Linux CI judgment and favorable Homebrew judgment did not establish either execution result; those require actual CI and installation checks. The whole-conversation deletion question was made explicit in the after pass, so its score is not a direct before/after comparison.
+The model remained uncertain about the close race (negative proposition 0.70) and whole-conversation deletion (positive proposition 0.47). Independently inspected the shutdown guards and verified close/delete behavior, delete cancellation, backend-error retention, and restart exclusions through real mouse input. Its low macOS/Linux CI judgment and favorable Homebrew judgment did not establish either execution result; those require actual CI and installation checks. The whole-conversation deletion question was made explicit in the after pass, so its score is not a direct before/after comparison.
 
 An oversized lifecycle request was rejected by the service. Retried that group with the complete UI source alone; all five groups completed. No credentials or private conversations are included in this report or the results.
 
