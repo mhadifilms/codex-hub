@@ -1028,7 +1028,6 @@ class Chat(Surface):
             with self.runtime.lock:
                 self.runtime.persist()
             self.snapshot = self.runtime.thread(self.slot, self.ident)
-        self.window_id = tmux('display-message', '-p', '-t', os.environ['TMUX_PANE'], '#{window_id}')
         tmux('set-option', '-w', '-t', self.window_id, '@hub_thread', self.ident)
         tmux('set-option', '-w', '-t', self.window_id, '@hub_version', hub_config.VERSION)
         self.backend_binary = getattr(client, 'binary', hub_config.executable(ROOT))
@@ -1649,7 +1648,9 @@ class Chat(Surface):
         self.backend_binary, self.backend_version = '', ''
         self.last_preferences = 0
         self.cached_usage, self.sidebar_hidden = {}, False
-        self.busy_status = None
+        self.window_id = tmux('display-message', '-p', '-t', os.environ['TMUX_PANE'], '#{window_id}')
+        tmux('set-option', '-w', '-t', self.window_id, '@hub_busy', '1')
+        self.busy_status = True
         self.enter_sends, self.pasting, self.steer_after_send = True, False, False
         self.last_enter = 0
         self.expanded = set()

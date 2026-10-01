@@ -191,13 +191,14 @@ class NativeIntegration(test_hub.HubIntegration):
         self.wait_for(lambda: hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_width} #{pane_height}') == '103 39')
         self.wait_for(lambda: 'A persistent draft' in self.capture())
         self.wait_for(lambda: 'Connecting' not in self.capture())
+        # Restored transcript text can paint before the backend finishes reconnecting.
+        self.wait_for(lambda: next(w for w in hub.windows() if w['id'] == self.chat['id'])['busy'] == '0')
         self.wait_for(lambda: 'Thinking' in self.capture())
         self.assertTrue(json.loads(saved.read_text())['paused']['1:' + ident])
         self.click_text('Thinking')
         self.wait_for(lambda: 'Checking the project structure' in self.capture())
         self.click_text('Thinking')
         # Reconnect this same completed chat to the upgraded frontend.
-        self.wait_for(lambda: next(w for w in hub.windows() if w['id'] == self.chat['id'])['busy'] == '0')
         before_reload = hub.tmux('display-message', '-p', '-t', self.chat['pane'], '#{pane_pid}')
         hub.reload_chat(next(w for w in hub.windows() if w['id'] == self.chat['id']))
         self.wait_for(lambda: 'A persistent draft' in self.capture() and 'Connecting' not in self.capture())
