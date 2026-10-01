@@ -22,6 +22,7 @@ SELF = Path(__file__).resolve()
 LIB = SELF.parent.parent / 'lib'
 sys.path.insert(0, str(LIB if (LIB / 'hub_config.py').is_file() else SELF.parent.parent / 'share/codex-hub'))
 import hub_config
+from hub_platform import clipboard_command, open_command
 ROOT = hub_config.ROOT
 SOCKET = ROOT / 'tmux.sock'
 AUTH_ENV = hub_config.AUTH_ENV
@@ -109,7 +110,8 @@ def account_projects(slot, data=None):
 
 
 def visible_record(record):
-    return record.get('has_content', record.get('title', 'New chat') != 'New chat') or record.get('has_draft', False)
+    return not record.get('deleted') and (record.get('has_content', record.get('title', 'New chat') != 'New chat')
+                                         or record.get('open') and record.get('has_draft', False))
 
 
 def pin_key(window):
@@ -140,25 +142,84 @@ def windows():
     return rows
 
 
-def history(slot):
+def history(slot, archived=False):
     # Read metadata only. Authentication and conversation contents never leave CODEX_HOME.
     databases = list(account_home(slot).glob('state_*.sqlite'))
-    if not databases:
+    records = state().get('chats', {}).get(slot, {})
+    def local_rows(excluded=()):
         return [{**record, 'id': ident, 'title': record.get('title', 'New chat'), 'updated_at': record.get('updated_at', 0)}
-                for ident, record in state().get('chats', {}).get(slot, {}).items() if visible_record(record)], ''
+                for ident, record in records.items() if ident not in excluded and visible_record(record)
+                and bool(record.get('archived')) == archived]
+    if not databases:
+        return local_rows(), ''
     database = max(databases, key=lambda p: int(p.stem.split('_')[-1]))
     try:
         with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=.2)) as db:
             db.row_factory = sqlite3.Row
-            rows = db.execute('SELECT id, title, cwd, updated_at FROM threads WHERE archived = 0 '
-                              'AND has_user_event = 1 ORDER BY updated_at DESC').fetchall()
-        rows = [{**dict(row), 'cwd': str(Path(row['cwd']).resolve())} for row in rows]
-        existing = {row['id'] for row in rows}
-        rows += [{**record, 'id': ident, 'title': record.get('title', 'New chat'), 'updated_at': record.get('updated_at', 0)}
-                 for ident, record in state().get('chats', {}).get(slot, {}).items() if ident not in existing and visible_record(record)]
+            all_ids = {row[0] for row in db.execute('SELECT id FROM threads')}
+            rows = db.execute('SELECT id, title, cwd, updated_at FROM threads WHERE archived = ? '
+                              'AND has_user_event = 1 ORDER BY updated_at DESC', (int(archived),)).fetchall()
+        rows = [{**dict(row), 'archived': archived, 'cwd': str(Path(row['cwd']).resolve())} for row in rows
+                if not records.get(row['id'], {}).get('deleted')
+                and bool(records.get(row['id'], {}).get('archived', archived)) == archived]
+        rows += local_rows(all_ids)
+        # Unsaved drafts may already have a database row with has_user_event=0.
+        present = {row['id'] for row in rows}
+        rows += [row for row in local_rows(present) if row['id'] in all_ids and row.get('open')
+                 and row.get('has_draft') and not row.get('has_content')]
         return rows, ''
     except sqlite3.Error:
-        return [], 'Saved chats temporarily unavailable'
+        return local_rows(), 'Saved chats temporarily unavailable'
+
+
+def close_chat(window, delete_state=False):
+    """Close a tab; a closed record must never be restored as an open tab."""
+    tmux('set-option', '-w', '-t', window['id'], '@hub_closing', '1')
+    if window.get('thread'):
+        update_state(lambda data: data.setdefault('chats', {}).setdefault(window['slot'], {}).get(window['thread'], {}).update(open=False))
+    home = next(w for w in windows() if w['slot'] == window['slot'] and w['kind'] == 'home')
+    if window['engine'] == 'tui':
+        pid = int(tmux('display-message', '-p', '-t', window['pane'], '#{pane_pid}'))
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        until = time.monotonic() + 5
+        while tmux('display-message', '-p', '-t', window['pane'], '#{pane_dead}', check=False) == '0' and time.monotonic() < until:
+            time.sleep(.05)
+    if delete_state and window.get('thread'):
+        (ROOT / 'tui-state' / window['slot'] / (window['thread'] + '.json')).unlink(missing_ok=True)
+    # One server command survives closing the pane hosting this menu.
+    subprocess.run(['tmux', '-S', str(SOCKET), 'select-window', '-t', home['id'], ';', 'kill-window', '-t', window['id']], check=True)
+
+
+def change_chat(slot, ident, action, window=None):
+    """Apply backend lifecycle changes before changing sidebar metadata."""
+    if window and window['busy'] != '0':
+        raise ValueError('Stop the active turn and resolve requests before archiving or deleting this chat.')
+    from hub_runtime import Rpc
+    client = Rpc(slot, lambda _: None, ROOT)
+    try:
+        client.call('thread/' + action, {'threadId': ident})
+    finally:
+        client.close()
+    def changed(data):
+        record = data.setdefault('chats', {}).setdefault(slot, {}).setdefault(ident, {})
+        record.update(open=False, archived=action == 'archive', deleted=action == 'delete')
+        if action in ('archive', 'delete'):
+            pins = data.setdefault('pins', {}).setdefault(slot, [])
+            if ident in pins:
+                pins.remove(ident)
+            if data.get('active', {}).get(slot) == ident:
+                data['active'].pop(slot, None)
+        if action == 'delete':
+            record.update(has_content=False, has_draft=False)
+            data.setdefault('names', {}).setdefault(slot, {}).pop(ident, None)
+    update_state(changed)
+    if action == 'delete' and not window:
+        (ROOT / 'tui-state' / slot / (ident + '.json')).unlink(missing_ok=True)
+    if window:
+        close_chat(window, delete_state=action == 'delete')
 
 
 def repositories(slot):
@@ -231,7 +292,7 @@ def restore_chats():
     selected = saved.get('selected', {}).copy()
     for slot in LABELS:
         for ident, record in records.get(slot, {}).items():
-            if record.get('open') and visible_record(record) and Path(record['cwd']).is_dir():
+            if record.get('open') and not record.get('archived') and visible_record(record) and Path(record['cwd']).is_dir():
                 new_chat(slot, record['cwd'], record.get('title', 'New chat'), thread=ident, background=True)
         active = next((w for w in windows() if w['slot'] == slot and w.get('thread') == saved.get('active', {}).get(slot)), None)
         if active:
@@ -436,8 +497,8 @@ class Surface:
         return min(points, key=lambda point: (abs(point[0] - y), abs(point[1] - x)))[2] if points else len(self.fields.get(name, ''))
 
     def copy_text(self, value):
-        clipboard = ['pbcopy'] if sys.platform == 'darwin' else ['wl-copy'] if shutil.which('wl-copy') else ['xclip', '-selection', 'clipboard'] if shutil.which('xclip') else None
-        if clipboard and shutil.which(clipboard[0]):
+        clipboard = clipboard_command()
+        if clipboard:
             subprocess.run(clipboard, input=value.encode(), check=True)
         else:
             tmux('set-buffer', value)
@@ -517,9 +578,14 @@ class Surface:
                 hit = next((action for top, left, height, width, action in reversed(self.hits)
                             if top <= y < top + height and left <= x < left + width), None)
                 self.hover = hit
+                if button & (curses.BUTTON3_PRESSED | curses.BUTTON3_CLICKED):
+                    self.pressed = None
+                    return ('context-menu', hit, x, y)
                 motion = button & getattr(curses, 'REPORT_MOUSE_POSITION', 0)
                 release = button & curses.BUTTON1_RELEASED
                 press = button & curses.BUTTON1_PRESSED
+                if getattr(self, 'context_active', False) and press and hit is None:
+                    return ('cancel',)
                 if self.drag_field and (motion or release):
                     name, anchor = self.drag_field
                     position = self.field_position(name, x, y)
@@ -571,6 +637,8 @@ class Surface:
                     else:
                         self.edit = None
                         return hit
+                if clicked and getattr(self, 'context_active', False):
+                    return ('cancel',)
             return None
         if key == curses.KEY_RESIZE:
             self.text_selection = None
@@ -634,6 +702,31 @@ class Surface:
         tmux('display-popup', '-E', '-x', 'C', '-y', 'C', '-w', '85%', '-h', '85%',
              '-s', 'bg=colour234,fg=colour253', '-S', 'fg=colour238',
              '-t', os.environ['TMUX_PANE'], '-T', ' Codex ', command(mode, self.slot, *args))
+
+    def context_menu(self, choices, x, y):
+        """Mouse menu anchored to the clicked object, with outside-click dismissal."""
+        background, hits = curses.newwin(*self.screen.getmaxyx(), 0, 0), self.hits
+        self.screen.overwrite(background)
+        original_edit, self.edit = self.edit, None
+        self.context_active = True
+        try:
+            h, w = self.screen.getmaxyx()
+            width = min(w - 2, max(len(label) for label, _ in choices) + 4)
+            left, top = max(0, min(x, w - width - 1)), max(0, min(y, h - len(choices) - 2))
+            while True:
+                background.overwrite(self.screen)
+                self.hits = []
+                self.panel(top, left, width, len(choices) + 2)
+                for row, (label, value) in enumerate(choices, top + 1):
+                    self.button(row, left + 1, width - 2, label, ('pick', value), align='left')
+                action = self.event()
+                if action and action[0] == 'pick':
+                    return action[1]
+                if action and action[0] in ('cancel', 'context-menu', 'resize'):
+                    return None
+        finally:
+            self.context_active = False
+            self.edit, self.hits = original_edit, hits
 
     def error(self, error):
         self.message = (error.stderr.strip().splitlines()[-1] if isinstance(error, subprocess.CalledProcessError)
@@ -707,11 +800,18 @@ class Sidebar(Surface):
             self.usage_worker.start()
         self.live = sorted([w for w in windows() if w['slot'] == self.slot], key=lambda w: float(w['created'] or int(w['id'][1:])), reverse=True)
         self.live = [w for w in self.live if w['kind'] != 'chat' or w['engine'] != 'tui' or visible_record(self.data.get('chats', {}).get(self.slot, {}).get(w['thread'], {}))]
-        self.saved, self.history_error = history(self.slot)
+        records = self.data.get('chats', {}).get(self.slot, {})
+        self.live = [w for w in self.live if not records.get(w['thread'], {}).get('archived') and not records.get(w['thread'], {}).get('deleted')]
+        self.saved, self.history_error = history(self.slot, getattr(self, 'archived', False))
         self.pins = self.data.get('pins', {}).get(self.slot, [])
         names = self.data.get('names', {}).get(self.slot, {})
         for row in self.saved:
             row['title'] = names.get(row['id'], row['title'])
+            if not records.get(row['id'], {}).get('has_content', True) and records.get(row['id'], {}).get('has_draft'):
+                row['title'] = 'Draft'
+        for window in self.live:
+            if not records.get(window['thread'], {}).get('has_content', True) and records.get(window['thread'], {}).get('has_draft'):
+                window['name'] = 'Draft'
         self.selected = self.data.get('selected', {}).get(self.slot)
         self.collapsed = self.data.get('collapsed', {}).get(self.slot, [])
         self.projects = list(dict.fromkeys([*account_projects(self.slot, self.data),
@@ -723,6 +823,9 @@ class Sidebar(Surface):
     def rows(self):
         rows = []
         query = self.fields.get('search', '').lower()
+        if getattr(self, 'archived', False):
+            return [('saved', row['title'], row) for row in sorted(self.saved, key=lambda row: row.get('updated_at', 0), reverse=True)
+                    if not query or query in row['title'].lower()]
         pinned_live = [w for w in self.live if pin_key(w) in self.pins and (not query or query in w['name'].lower())]
         pinned_saved = [r for r in self.saved if r['id'] in self.pins and r['id'] not in {w['thread'] for w in self.live}
                         and (not query or query in r['title'].lower())]
@@ -775,8 +878,10 @@ class Sidebar(Surface):
         self.field('search', 8, 2, w - 4, 'Search chats')
         if self.fields.get('search'):
             self.button(8, w - 5, 3, '×', ('clear-search',), quiet=True)
-        self.text(10, 2, 'Chats' if self.pins else 'Projects', 2)
-        self.button(10, w - 15, 13, '+ Add project', ('project',), quiet=True)
+        self.button(9, 2, w - 4, '← All chats' if getattr(self, 'archived', False) else '▣ Archived chats', ('archives',), quiet=True, align='left')
+        self.text(10, 2, 'Archived' if self.archived else 'Chats' if self.pins else 'Projects', 2)
+        if not self.archived:
+            self.button(10, w - 15, 13, '+ Add project', ('project',), quiet=True)
         rows = self.rows()
         available = max(1, h - 18)
         self.offset = min(self.offset, max(0, len(rows) - available))
@@ -819,6 +924,7 @@ class Sidebar(Surface):
         self.button(h - 2, w // 2 + 1, w // 2 - 3, '⏻ Exit', ('exit',), quiet=True)
 
     def run(self):
+        self.archived = False
         self.fit()
         self.refresh()
         refreshed = time.monotonic()
@@ -833,6 +939,31 @@ class Sidebar(Surface):
             try:
                 kind = action[0]
                 self.message = ''
+                if kind == 'context-menu':
+                    hit, x, y = action[1:]
+                    if hit and hit[0] in ('live', 'saved'):
+                        row = hit[1]
+                        target = row['id'] if hit[0] == 'live' else 'thread:' + row['id']
+                        choices = [('Rename…', ('manage', target, 'rename'))]
+                        if self.archived:
+                            choices += [('Restore chat', ('manage', target, 'unarchive'))]
+                        else:
+                            pinned = (pin_key(row) if hit[0] == 'live' else row['id']) in self.pins
+                            choices += [('Unpin chat' if pinned else 'Pin chat', ('manage', target, 'pin'))]
+                            if hit[0] == 'live':
+                                choices += [('Close tab', ('manage', target, 'close'))]
+                            if hit[0] == 'saved' or row.get('thread'):
+                                choices += [('Archive chat', ('manage', target, 'archive'))]
+                        if hit[0] == 'saved' or row.get('thread'):
+                            choices += [('Delete chat…', ('manage', target, 'delete'))]
+                    elif hit and hit[0] == 'folder':
+                        choices = [('New chat', ('new', hit[1])), ('Add project…', ('project',))]
+                    else:
+                        choices = [('New chat', ('new',)), ('Add project…', ('project',)), ('Settings…', ('settings',))]
+                    action = self.context_menu(choices, x, y)
+                    if not action:
+                        continue
+                    kind = action[0]
                 if kind == 'resize':
                     self.fit()
                 elif kind == 'account':
@@ -845,6 +976,9 @@ class Sidebar(Surface):
                     self.popup('settings')
                 elif kind == 'clear-search':
                     self.fields['search'] = ''
+                    self.offset = 0
+                elif kind == 'archives':
+                    self.archived = not self.archived
                     self.offset = 0
                 elif kind == 'folder':
                     path = action[1]
@@ -865,9 +999,12 @@ class Sidebar(Surface):
                     focus(action[1])
                 elif kind == 'saved':
                     row = action[1]
-                    new_chat(self.slot, row['cwd'], row['title'], row['id'])
+                    if self.archived:
+                        self.popup('manage', 'thread:' + row['id'])
+                    else:
+                        new_chat(self.slot, row['cwd'], row['title'], row['id'])
                 elif kind == 'manage':
-                    self.popup('manage', action[1])
+                    self.popup('manage', *action[1:])
                 elif kind == 'upgrade' and self.upgrade:
                     self.popup('manage', self.upgrade['id'])
                 elif kind == 'home':
@@ -1021,7 +1158,38 @@ class Chat(Surface):
         self.models = models
         if thread:
             self.ident = thread
-            self.snapshot = self.runtime.thread(self.slot, thread)
+            try:
+                self.snapshot = self.runtime.thread(self.slot, thread)
+            except RuntimeError as error:
+                record = state().get('chats', {}).get(self.slot, {}).get(thread, {})
+                # Codex does not persist a rollout until a draft's first turn.
+                # Recreate only a known empty draft, never a missing real chat.
+                if record.get('has_content') is not False or 'thread not loaded' not in str(error).lower():
+                    raise
+                old_file = self.runtime.file
+                self.ident = self.runtime.action({'action': 'new', 'slot': self.slot, 'cwd': path})['threadId']
+                old_key, new_key = self.slot + ':' + thread, self.slot + ':' + self.ident
+                with self.runtime.lock:
+                    for group in ('queues', 'paused', 'settings', 'telemetry'):
+                        values = self.runtime.saved.get(group, {})
+                        if old_key in values:
+                            values[new_key] = values.pop(old_key)
+                    self.runtime.file = old_file.parent / (self.ident + '.json')
+                    self.runtime.persist()
+                def recovered(data):
+                    records = data.setdefault('chats', {}).setdefault(self.slot, {})
+                    records[self.ident] = records.pop(thread, record)
+                    names = data.setdefault('names', {}).setdefault(self.slot, {})
+                    if thread in names:
+                        names[self.ident] = names.pop(thread)
+                    pins = data.setdefault('pins', {}).setdefault(self.slot, [])
+                    if thread in pins:
+                        pins[pins.index(thread)] = self.ident
+                    if data.get('active', {}).get(self.slot) == thread:
+                        data['active'][self.slot] = self.ident
+                update_state(recovered)
+                old_file.unlink(missing_ok=True)
+                self.snapshot = self.runtime.thread(self.slot, self.ident)
         else:
             self.ident = self.runtime.action({'action': 'new', 'slot': self.slot, 'cwd': path})['threadId']
             self.runtime.file = state_file.parent / (self.ident + '.json')
@@ -1047,7 +1215,8 @@ class Chat(Surface):
         has_content = any(item.get('type') == 'userMessage' for turn in self.snapshot['thread'].get('turns', []) for item in turn.get('items', []))
         def opened(data):
             record = data.setdefault('chats', {}).setdefault(self.slot, {}).setdefault(self.ident, {})
-            record.update(cwd=path, title=title, open=True, has_content=has_content or record.get('has_content', False))
+            if not self.stopping and tmux('show-option', '-wv', '-t', self.window_id, '@hub_closing', check=False) != '1' and not record.get('deleted'):
+                record.update(cwd=path, title=title, open=True, archived=False, has_content=has_content or record.get('has_content', False))
             record.setdefault('updated_at', time.time())
         update_state(opened)
         if tmux('display-message', '-p', '-t', self.window_id, '#{window_active}') == '1':
@@ -1066,6 +1235,8 @@ class Chat(Surface):
 
     def save_draft(self):
         if not self.runtime or not self.ready:
+            return
+        if state().get('chats', {}).get(self.slot, {}).get(self.ident, {}).get('deleted'):
             return
         if not self.runtime.lock.acquire(blocking=False):
             return
@@ -1407,11 +1578,7 @@ class Chat(Surface):
                            for item in turn.get('items', []) if item.get('type') == 'agentMessage')
         if not text:
             raise ValueError('No response to copy yet.')
-        clipboard = ['pbcopy'] if sys.platform == 'darwin' else ['wl-copy'] if shutil.which('wl-copy') else ['xclip', '-selection', 'clipboard'] if shutil.which('xclip') else None
-        if clipboard and shutil.which(clipboard[0]):
-            subprocess.run(clipboard, input=text.encode(), check=True)
-        else:
-            tmux('set-buffer', text)
+        self.copy_text(text)
         self.message = 'Copied response.'
 
     def choice(self, title, choices, dropdown=False):
@@ -1522,11 +1689,7 @@ class Chat(Surface):
         self.message = 'Opened original image in the system viewer.'
 
     def open_external(self, value, text=False):
-        opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
-        if not shutil.which(opener):
-            raise ValueError('Install a system file/browser opener to open this link.')
-        args = [opener, '-t', value] if text and sys.platform == 'darwin' else [opener, value]
-        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(open_command(value, text), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def open_link(self, value):
         from urllib.parse import urlparse, unquote
@@ -1735,6 +1898,21 @@ class Chat(Surface):
                 try:
                     kind = action[0]
                     self.message = ''
+                    if kind == 'context-menu':
+                        hit, x, y = action[1:]
+                        if hit and hit[0] == 'link':
+                            choices = [('Open link', hit), ('Copy link', ('copy-link', hit[1]))]
+                        elif hit and hit[0] in ('queue-edit', 'queue-menu', 'queue-delete', 'steer-queue'):
+                            choices = [('Steer now', ('steer-queue', hit[1])), ('Edit message…', ('queue-edit', hit[1])), ('Delete queued message', ('queue-delete', hit[1]))]
+                        elif hit and hit[0] == 'field':
+                            choices = [('Copy text', ('copy-field', hit[1]))]
+                        else:
+                            choices = [('Copy response', ('copy',)), ('Chat options…', ('manage', '')),
+                                       ('Close tab', ('close',)), ('Archive chat', ('manage', 'archive')), ('Delete chat…', ('manage', 'delete'))]
+                        action = self.context_menu(choices, x, y)
+                        if not action:
+                            continue
+                        kind = action[0]
                     if kind == 'slash' or kind == 'send' and self.fields.get('prompt', '').startswith('/'):
                         kind = self.handle_slash(action[1] if kind == 'slash' else self.fields['prompt'])
                         if not kind:
@@ -1768,7 +1946,15 @@ class Chat(Surface):
                     elif kind == 'exit':
                         tmux('detach-client')
                     elif kind == 'close':
-                        self.popup('manage', self.window_id)
+                        self.popup('manage', self.window_id, 'close')
+                    elif kind == 'manage':
+                        self.popup('manage', self.window_id, action[1])
+                    elif kind == 'copy-link':
+                        self.copy_text(action[1])
+                    elif kind == 'copy-field':
+                        low, high = sorted(self.field_selection.get(action[1], (0, 0)))
+                        value = self.fields.get(action[1], '')
+                        self.copy_text(value[low:high] if low != high else value)
                     elif kind == 'details':
                         if self.screen.getmaxyx()[1] < 85 and self.ready:
                             selected = self.choice('Chat details', [('Pin / unpin chat', 'pin'), ('Open in Codex CLI', 'cli')])
@@ -1788,9 +1974,11 @@ class Chat(Surface):
                         continue
                     elif kind == 'newline':
                         position = self.cursors.get('prompt', len(self.fields.get('prompt', '')))
+                        low, high = sorted(self.field_selection.get('prompt', (position, position)))
                         text = self.fields.get('prompt', '')
-                        self.fields['prompt'] = text[:position] + '\n' + text[position:]
-                        self.cursors['prompt'] = position + 1
+                        self.fields['prompt'] = text[:low] + '\n' + text[high:]
+                        self.cursors['prompt'] = low + 1
+                        self.field_selection['prompt'] = (low + 1, low + 1)
                         self.edit = 'prompt'
                     elif kind == 'steer-queue':
                         self.request('steerQueue', id=action[1])
@@ -1958,16 +2146,32 @@ class Settings(Surface):
 
 
 class Manage(Surface):
-    def run(self, wid):
+    def run(self, wid, operation=''):
         saved = wid.startswith('thread:')
         window = None if saved else next((w for w in windows() if w['id'] == wid and w['slot'] == self.slot), None)
-        row = next((r for r in history(self.slot)[0] if r['id'] == wid[7:]), None) if saved else None
+        row = next((r for r in history(self.slot)[0] + history(self.slot, archived=True)[0] if r['id'] == wid[7:]), None) if saved else None
         if not window and not row:
             return
         key = row['id'] if saved else pin_key(window)
         self.fields['name'] = state().get('names', {}).get(self.slot, {}).get(key, row['title'] if saved else window['name'])
-        confirming = False
+        archived = state().get('chats', {}).get(self.slot, {}).get(key, {}).get('archived', row.get('archived', False) if row else False)
+        confirming = operation == 'close'
+        deleting = operation == 'delete'
         reloading = False
+        if operation == 'rename':
+            self.edit = 'name'
+        if operation == 'pin':
+            toggle_pin(self.slot, key)
+            return
+        if operation in ('archive', 'unarchive'):
+            try:
+                change_chat(self.slot, key, operation, window)
+                return
+            except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+                self.error(error)
+        if operation == 'close' and window and window['busy'] == '0':
+            close_chat(window)
+            return
         while True:
             h, w = self.begin()
             self.text(2, 3, 'Chat options', bold=True)
@@ -1975,14 +2179,21 @@ class Manage(Surface):
             self.field('name', 6, 3, w - 6, 'Chat name')
             self.button(8, 3, 18, 'Save name', ('save',), True)
             pinned = key in state().get('pins', {}).get(self.slot, [])
-            self.button(8, 23, 18, 'Unpin chat' if pinned else 'Pin chat', ('pin',))
+            if not archived:
+                self.button(8, 23, 18, 'Unpin chat' if pinned else 'Pin chat', ('pin',))
             if not saved:
                 self.text(11, 3, 'Closing stops this chat. Its saved history is kept.', 2)
-                self.button(13, 3, 24, 'Confirm close' if confirming else 'Close window', ('close',))
+                self.button(13, 3, 24, 'Confirm close' if confirming else 'Close tab', ('close',))
                 if window['engine'] == 'tui':
                     self.button(15, 3, 24, 'Confirm reload' if reloading else '↻ Reload chat', ('reload',))
                     if reloading:
                         self.text(17, 3, 'Reconnects this chat; drafts and history are kept. Stop any active turn first.', 2)
+            if saved or window.get('thread'):
+                self.button(19 if window else 13, 3, 24, 'Restore chat' if archived else 'Archive chat', ('unarchive' if archived else 'archive',))
+                self.button(21 if window else 15, 3, 24, 'Confirm delete' if deleting else 'Delete chat…', ('delete',))
+                if deleting:
+                    self.text(23 if window else 17, 3, 'Permanently deletes this conversation and its drafts. Project files are kept.', 6, w - 6)
+            self.text(h - 5, 3, self.message, 6, w - 6)
             self.button(h - 3, 3, 18, 'Cancel', ('cancel',))
             action = self.event()
             if action == ('reload',):
@@ -2008,12 +2219,19 @@ class Manage(Surface):
                 update_state(lambda data: (data.setdefault('names', {}).setdefault(self.slot, {}).update({key: title}),
                                           data.setdefault('chats', {}).setdefault(self.slot, {}).get(key, {}).update({'title': title})))
                 return
+            if action and action[0] in ('archive', 'unarchive', 'delete'):
+                if action == ('delete',) and not deleting:
+                    deleting = True
+                    continue
+                try:
+                    current = next((w for w in windows() if w['id'] == wid), None) if window else None
+                    change_chat(self.slot, key, action[0], current)
+                    return
+                except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+                    self.error(error)
             if action == ('close',) and window:
-                if confirming:
-                    home = next(w for w in windows() if w['slot'] == self.slot and w['kind'] == 'home')
-                    if window.get('thread'):
-                        update_state(lambda data: data.setdefault('chats', {}).setdefault(self.slot, {}).get(window['thread'], {}).update({'open': False}))
-                    subprocess.run(['tmux', '-S', str(SOCKET), 'select-window', '-t', home['id'], ';', 'kill-window', '-t', wid], check=True)
+                if confirming or window['busy'] == '0':
+                    close_chat(window)
                     return
                 confirming = True
 

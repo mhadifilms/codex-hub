@@ -70,14 +70,26 @@ for line in sys.stdin:
                           for n, (name, label) in enumerate(model_pairs)]}
     elif method == 'thread/start':
         thread['cwd'] = p.get('cwd', thread['cwd'])
-        persist()
         result = {'thread': thread}
     elif method in ('thread/read', 'thread/resume'):
         path = home / ('fixture-' + p['threadId'] + '.json')
         if path.exists():
             thread = json.loads(path.read_text())
             counter = len(thread['turns'])
+        elif p['threadId'] != thread['id']:
+            emit({'id': request['id'], 'error': {'code': -32000, 'message': 'thread not loaded: ' + p['threadId']}})
+            continue
         result = {'thread': thread}
+    elif method in ('thread/archive', 'thread/unarchive', 'thread/delete'):
+        if (home / 'fail-lifecycle').exists():
+            emit({'id': request['id'], 'error': {'code': -32000, 'message': 'Fixture lifecycle failure'}})
+            continue
+        with sqlite3.connect(home / 'state_5.sqlite') as db:
+            if method == 'thread/delete':
+                db.execute('DELETE FROM threads WHERE id = ?', (p['threadId'],))
+                (home / ('fixture-' + p['threadId'] + '.json')).unlink(missing_ok=True)
+            else:
+                db.execute('UPDATE threads SET archived = ? WHERE id = ?', (int(method == 'thread/archive'), p['threadId']))
     elif method == 'turn/start':
         counter += 1
         active = 'turn-' + str(counter)

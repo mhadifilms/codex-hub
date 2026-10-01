@@ -35,6 +35,19 @@ class NativeIntegration(test_hub.HubIntegration):
             fake.write_text('#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
                             'Path(os.environ["CODEX_HOME"]).joinpath("copied.txt").write_text(sys.stdin.read())\n')
             fake.chmod(0o700)
+        # WSL tests must not touch the real Windows viewer or clipboard either.
+        fake = cls.fakebin / 'powershell.exe'
+        fake.write_text('#!/usr/bin/env python3\nimport os,sys,json,base64\nfrom pathlib import Path\n'
+                        'home=Path(os.environ["CODEX_HOME"])\n'
+                        'if "-EncodedCommand" in sys.argv:\n'
+                        ' script=base64.b64decode(sys.argv[-1]).decode("utf-16-le")\n'
+                        ' value=script.removeprefix("Start-Process -FilePath ").strip()[1:-1].replace("\'\'", "\'")\n'
+                        ' home.joinpath("opened.json").write_text(json.dumps([value]))\n'
+                        'else: home.joinpath("copied.txt").write_text(sys.stdin.read())\n')
+        fake.chmod(0o700)
+        fake = cls.fakebin / 'wslpath'
+        fake.write_text('#!/usr/bin/env python3\nimport sys\nprint(sys.argv[-1])\n')
+        fake.chmod(0o700)
 
     @classmethod
     def capture(cls):
@@ -129,7 +142,7 @@ class NativeIntegration(test_hub.HubIntegration):
         self.wait_for(lambda: ident in hub.state().get('pins', {}).get('1', []))
         self.wait_for(lambda: 'Pinned' in self.sidebar_text('1'))
         self.click_text('ⓘ')
-        # Inline thumbnail and image input use local files.
+        # Image preview opens the original local file, without cell conversion.
         from PIL import Image
         sample = self.project / 'sample.png'
         Image.new('RGB', (48, 32), '#3c7099').save(sample)

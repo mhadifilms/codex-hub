@@ -225,7 +225,7 @@ class InstallationTests(unittest.TestCase):
             shared.mkdir(parents=True)
             repo = Path(__file__).resolve().parents[1]
             shutil.copyfile(repo / 'bin/codex-hub-tui', local / 'bin/codex-hub-tui')
-            for name in ('hub_runtime.py', 'hub_config.py', 'hub_markdown.py'):
+            for name in ('hub_runtime.py', 'hub_config.py', 'hub_markdown.py', 'hub_platform.py'):
                 shutil.copyfile(repo / 'lib' / name, shared / name)
             shutil.copyfile(repo / 'VERSION', shared / 'VERSION')
             subprocess.run([sys.executable, '-c',

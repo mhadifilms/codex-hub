@@ -90,7 +90,6 @@ class ChatControls(test_native.NativeIntegration):
         self.click_text('×')
         self.wait_for(lambda: b'Chat options' in type(self).output)
         # Popup origin is fixed by this test's 140x40 terminal.
-        self.click(24, 17)
         self.wait_for(lambda: b'Confirm close' in type(self).output)
         self.click(24, 17)
         self.wait_for(lambda: all(w['id'] != wid for w in hub.windows()))
