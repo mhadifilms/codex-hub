@@ -100,6 +100,7 @@ class Lifecycle(test_native.NativeIntegration):
         os.write(self.fd,b'\x1b')
         self.wait_for(lambda: 'Fixture response' in self.capture())
         self.assertFalse(hub.state()['chats']['1'][ident].get('deleted'))
+        type(self).output = b''
         self.sidebar_action('Lifecycle review', right=True)
         self.sidebar_action('Delete chat…')
         self.wait_for(lambda: b'Confirm delete' in type(self).output)
