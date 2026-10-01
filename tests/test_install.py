@@ -22,7 +22,7 @@ class InstallTests(unittest.TestCase):
                    'CODEX_HUB_CODEX': str(backend)}
             subprocess.run(['sh',str(REPO/'install.sh'),'--prefix',str(prefix),'--no-deps'],env=env,check=True,capture_output=True)
             launcher = prefix/'bin/codex-hub'
-            self.assertEqual(subprocess.check_output([str(launcher),'--version'],env=env,text=True).strip(),(REPO/'VERSION').read_text().strip())
+            self.assertEqual(subprocess.check_output([str(launcher),'--version'],env=env,text=True).strip(),'Codex Hub '+(REPO/'VERSION').read_text().strip())
             self.assertTrue((prefix/'share/codex-hub/hub_platform.py').is_file())
             self.assertEqual((state/'tmux.conf').read_text(),(REPO/'tmux.conf').read_text())
             config = state/'config.json'
