@@ -68,6 +68,13 @@ class Lifecycle(test_native.NativeIntegration):
             hub.change_chat('1', ident, 'archive', {**current,'busy':'1'})
         self.click_text('■')
         self.wait_for(lambda: next(w for w in hub.windows() if w['id']==self.chat['id'])['busy']=='0')
+        before = hub.state()['chats']['1'][ident].copy()
+        failure = self.root / '1/fail-lifecycle'
+        failure.touch()
+        with self.assertRaises(RuntimeError):
+            hub.change_chat('1', ident, 'archive', next(w for w in hub.windows() if w['id']==self.chat['id']))
+        failure.unlink()
+        self.assertEqual(hub.state()['chats']['1'][ident], before)
         self.sidebar_action('Lifecycle review', right=True)
         self.sidebar_action('Pin chat')
         self.wait_for(lambda: ident in hub.state().get('pins',{}).get('1',[]))

@@ -710,10 +710,12 @@ class Surface:
         original_edit, self.edit = self.edit, None
         self.context_active = True
         try:
-            h, w = self.screen.getmaxyx()
-            width = min(w - 2, max(len(label) for label, _ in choices) + 4)
-            left, top = max(0, min(x, w - width - 1)), max(0, min(y, h - len(choices) - 2))
             while True:
+                h, w = self.screen.getmaxyx()
+                if w < 6 or h < len(choices) + 2:
+                    return None
+                width = min(w - 2, max(len(label) for label, _ in choices) + 4)
+                left, top = max(0, min(x, w - width - 1)), max(0, min(y, h - len(choices) - 2))
                 background.overwrite(self.screen)
                 self.hits = []
                 self.panel(top, left, width, len(choices) + 2)
@@ -722,7 +724,19 @@ class Surface:
                 action = self.event()
                 if action and action[0] == 'pick':
                     return action[1]
-                if action and action[0] in ('cancel', 'context-menu', 'resize'):
+                if action == ('resize',):
+                    # Reflow against the actual pane; tmux may resize it after
+                    # toggling the sidebar or selecting a different pane.
+                    redraw = getattr(self, 'draw_chat', None) or getattr(self, 'draw', None)
+                    if not redraw:
+                        return None
+                    redraw()
+                    hits = self.hits
+                    background = curses.newwin(*self.screen.getmaxyx(), 0, 0)
+                    self.screen.overwrite(background)
+                    self.pressed = None
+                    continue
+                if action and action[0] in ('cancel', 'context-menu'):
                     return None
         finally:
             self.context_active = False
