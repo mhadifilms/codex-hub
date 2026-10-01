@@ -37,7 +37,8 @@ jobs:
       - name: Test the Windows / WSL installation and TUI
         shell: pwsh
         run: |
-          $LinuxRepo = (wsl --distribution Ubuntu --user root -- wslpath -u "$env:GITHUB_WORKSPACE").Trim()
+          $LinuxRepo = wsl --distribution Ubuntu --user root --exec wslpath -u ($env:GITHUB_WORKSPACE.Replace('\', '/'))
           if ($LASTEXITCODE -ne 0) { throw 'WSL path conversion failed' }
-          wsl --distribution Ubuntu --user root -- bash "$LinuxRepo/.github/scripts/test-windows.sh" "$LinuxRepo"
+          $LinuxRepo = $LinuxRepo.Trim()
+          wsl --distribution Ubuntu --user root --exec bash "$LinuxRepo/.github/scripts/test-windows.sh" "$LinuxRepo"
           if ($LASTEXITCODE -ne 0) { throw 'Windows / WSL tests failed' }

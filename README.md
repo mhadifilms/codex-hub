@@ -71,12 +71,12 @@ Use `-Distribution NAME` if your WSL distribution has another name. The installe
 | Markdown | Styled paragraphs, headings, lists, tables, quotes, links, and highlighted code render directly in the terminal. |
 | Scrolling | Wheel/trackpad input, a draggable scrollbar, Page Up/Down, and jump to latest. Reading position stays anchored during streaming and resizing. |
 | Activity | Thinking and tool calls remain expandable after a turn finishes. User messages have distinct bubbles. |
-| Models and permissions | Choose models and reasoning effort from the installed backend's catalog. The **◇** dropdown offers Ask approval, Approve for me, and Full access. Full access allows unrestricted file/network actions without approval prompts. |
-| Context and usage | Hover **◔** for context usage and compaction status. The sidebar shows verified session and weekly percentages remaining. |
-| Selection | Click to position the composer caret; drag to select text. **⧉** copies selection or the latest response. **▣** opens tmux text selection mode. |
+| Models and permissions | Choose models and reasoning effort from the installed backend's catalog. The approval dropdown offers Ask approval, Approve for me, and Full access. Full access allows unrestricted file/network actions without approval prompts. |
+| Context and usage | Hover the context percentage for context usage and compaction status. The sidebar shows verified session and weekly percentages remaining. |
+| Selection | Click to position the composer caret; drag to select text. **Copy** copies selection or the latest response. The chat menu opens tmux text selection mode. |
 | Images and links | **+** attaches local images. Preview opens the original image in the system viewer at full resolution. Click links to open them. |
 | Persistence | Reopen the hub to restore open chats, drafts, model choices, and paused queues. Close stops a tab and keeps history; archive hides history until restored. |
-| Exit | Click **⏻ Exit** to detach. Chats keep running in tmux until stopped or closed. |
+| Exit | Click **Exit** to detach. Chats keep running in tmux until stopped or closed. |
 
 Icons show labels on hover. **☰** collapses the sidebar for more room; the layout supports an 80-column terminal.
 

@@ -878,7 +878,7 @@ class Sidebar(Surface):
         self.field('search', 8, 2, w - 4, 'Search chats')
         if self.fields.get('search'):
             self.button(8, w - 5, 3, '×', ('clear-search',), quiet=True)
-        self.button(9, 2, w - 4, '← All chats' if getattr(self, 'archived', False) else '▣ Archived chats', ('archives',), quiet=True, align='left')
+        self.button(9, 2, w - 4, '← All chats' if getattr(self, 'archived', False) else 'Archived chats', ('archives',), quiet=True, align='left')
         self.text(10, 2, 'Archived' if self.archived else 'Chats' if self.pins else 'Projects', 2)
         if not self.archived:
             self.button(10, w - 15, 13, '+ Add project', ('project',), quiet=True)
@@ -921,7 +921,7 @@ class Sidebar(Surface):
         if self.hover == ('usage',):
             self.text(h - 6, 2, 'Remaining · ' + (snapshot.get('observedAt', '')[:16] or self.usage.get('error', 'Fetching…')), 2, w - 4)
         self.text(h - 2, 2, 'v' + hub_config.VERSION, 2)
-        self.button(h - 2, w // 2 + 1, w // 2 - 3, '⏻ Exit', ('exit',), quiet=True)
+        self.button(h - 2, w // 2 + 1, w // 2 - 3, 'Exit', ('exit',), quiet=True)
 
     def run(self):
         self.archived = False
@@ -1291,7 +1291,7 @@ class Chat(Surface):
                                 for line in textwrap.wrap(paragraph, max(5, bubble - 4), replace_whitespace=False) or ['']:
                                     append(' ' * indent + '│ ' + line.ljust(bubble - 4) + ' │', 8, None)
                         elif content['type'] == 'localImage':
-                            label = self.shorten('▧ ' + Path(content['path']).name + ' · Preview', bubble - 4)
+                            label = self.shorten(Path(content['path']).name + ' · Preview', bubble - 4)
                             append(' ' * indent + '│ ' + label.ljust(bubble - 4) + ' │', 8, ('image', content['path']))
                         elif content['type'] == 'image':
                             append(' ' * indent + '│ ' + 'Image attachment'.ljust(bubble - 4) + ' │', 8, None)
@@ -1308,7 +1308,7 @@ class Chat(Surface):
                         append(line, 'markdown', None)
                     add('')
                 elif kind == 'imageView':
-                    add('▧  Preview image', 5, ('image', item.get('path', '')))
+                    add('Preview image', 5, ('image', item.get('path', '')))
                 else:
                     ident = item.get('id', '')
                     name = {'reasoning': 'Thinking', 'fileChange': 'File changes', 'webSearch': 'Web search', 'contextCompaction': 'Context compaction', 'commandExecution': 'Command', 'mcpToolCall': 'Tool call'}.get(kind, kind)
@@ -1367,13 +1367,11 @@ class Chat(Surface):
             self.text(1, 1, 'Enlarge this terminal to use the chat.', 2)
             return
         self.button(0, 1, 4, '☰', ('sidebar',), quiet=True)
-        self.button(0, 6, 4, '▣', ('select',), quiet=True)
-        self.button(0, 11, 4, '⧉', ('copy',), quiet=True)
-        self.button(0, w - 16, 5, 'ⓘ', ('details',), quiet=True)
-        self.button(0, w - 11, 5, '×', ('close',), quiet=True)
-        self.button(0, w - 6, 5, '⏻', ('exit',), quiet=True)
+        self.button(0, 6, 6, 'Copy', ('copy',), quiet=True)
+        self.button(0, w - 11, 5, '···', ('chat-menu',), quiet=True)
+        self.button(0, w - 6, 5, '×', ('close',), quiet=True)
         name = state().get('names', {}).get(self.slot, {}).get(self.ident) or self.snapshot.get('thread', {}).get('name') or 'New chat'
-        self.text(0, 17, self.shorten(name, max(0, w - 35)), bold=True)
+        self.text(0, 14, self.shorten(name, max(0, w - 28)), bold=True)
         right = 27 if self.details and w >= 85 else 0
         end = w - right
         width = max(20, min(90, end - 6))
@@ -1451,27 +1449,31 @@ class Chat(Surface):
             self.text(y, left + 1, '↳', 2, 2)
             self.button(y, left + 3, width - control_width - 3, label, ('queue-edit', entry['id']), quiet=False, align='left')
             self.button(y, left + width - control_width, 8 if wide else 3, '↳ Steer' if wide else '↳', ('steer-queue', entry['id']), quiet=False)
-            self.button(y, left + width - 8, 3, '⌫', ('queue-delete', entry['id']), quiet=False)
+            self.button(y, left + width - 8, 3, '×', ('queue-delete', entry['id']), quiet=False)
             self.button(y, left + width - 4, 3, '···', ('queue-menu', entry['id']), quiet=False)
         count = len(self.snapshot.get('queue', []))
         requests = len(self.snapshot.get('requests', []))
-        self.button(bottom, left, 7, '≡ ' + str(count), ('queue',), selected=bool(count))
-        self.button(bottom, left + 8, 4, '+', ('attach',), quiet=True)
+        if count:
+            self.button(bottom, left, 9, 'Queue ' + str(count), ('queue',), selected=True)
+        self.button(bottom, left + 10 if count else left, 4, '+', ('attach',), quiet=True)
         if requests:
             self.button(bottom, left + 13, min(20, width - 32), f'Respond ({requests})', ('approval',), True)
         elif self.images:
-            self.button(bottom, left + 13, min(20, width - 32), f'▧ {len(self.images)}', ('images',))
+            self.button(bottom, left + 13, min(20, width - 32), f'Images {len(self.images)}', ('images',))
         mode_label = {'ask': 'Ask approval', 'auto': 'Approve for me', 'full': 'Full access'}[self.approval_mode]
-        self.button(bottom, left + width - 19, 19, '◇ ' + mode_label + ' ▾', ('approval-mode',), quiet=True)
+        self.button(bottom, left + width - 18, 18, mode_label + ' ▾', ('approval-mode',), quiet=True)
         self.panel(bottom + 1, left, width, 5)
         self.field('prompt', bottom + 2, left + 1, width - 7, 'Message Codex…', height=3)
         self.button(bottom + 4, left + width - 5, 3, '↵', ('newline',), quiet=True)
         composing = bool(self.fields.get('prompt', '').strip() or self.images)
         active_composer = bool(self.snapshot.get('active') and composing)
-        model_width = min(25, max(8, width - (30 if active_composer else 25)))
+        model_width = min(25, max(8, width - (32 if active_composer else 27)))
         self.button(h - 3, left, model_width, self.shorten((self.model or 'Model') + ' ▾', model_width), ('model',), quiet=True)
         self.button(h - 3, left + model_width + 1, 9, (self.effort or 'Effort') + ' ▾', ('effort',), quiet=True)
-        self.button(h - 3, left + width - (18 if active_composer else 13), 4, '◔', ('context',), quiet=True)
+        usage = self.snapshot.get('thread', {}).get('_tokenUsage', {})
+        used, window = usage.get('last', {}).get('totalTokens'), usage.get('modelContextWindow')
+        context_label = f'{max(0, min(100, round(100 * used / window)))}%' if used is not None and window else '--%'
+        self.button(h - 3, left + width - (20 if active_composer else 15), 6, context_label, ('context',), quiet=True)
         composing = bool(self.fields.get('prompt', '').strip() or self.images)
         if self.snapshot.get('active'):
             if composing:
@@ -1482,10 +1484,10 @@ class Chat(Surface):
         if composing or not self.snapshot.get('active'):
             self.button(h - 3, left + width - 6, 5, '↑', ('send',), True)
         hints = {'sidebar': 'Toggle sidebar', 'select': 'Select text · drag in tmux selection mode', 'copy': 'Copy latest response',
-                 'details': 'Chat details', 'close': 'Close this chat', 'exit': 'Exit Hub · work keeps running', 'latest': 'Jump to latest response', 'queue': 'Review all queued messages', 'queue-edit': 'Edit queued message', 'queue-delete': 'Delete queued message', 'queue-menu': 'Queued message options', 'steer-queue': 'Send queued message into the active turn', 'newline': 'Insert newline · Alt+Enter; Shift+Enter when supported', 'attach': 'Attach image', 'images': 'Preview attached images',
+                 'chat-menu': 'Chat options', 'context': 'Context usage · click to compact', 'details': 'Chat details', 'close': 'Close this chat', 'exit': 'Exit Hub · work keeps running', 'latest': 'Jump to latest response', 'queue': 'Review all queued messages', 'queue-edit': 'Edit queued message', 'queue-delete': 'Delete queued message', 'queue-menu': 'Queued message options', 'steer-queue': 'Send queued message into the active turn', 'newline': 'Insert newline · Alt+Enter; Shift+Enter when supported', 'attach': 'Attach image', 'images': 'Preview attached images',
                  'approval-mode': 'Approval mode · applies next turn', 'steer': 'Send now · steer current turn', 'stop': 'Stop current turn', 'send': 'Queue message' if self.snapshot.get('active') else 'Send message'}
         hover_help = hints.get(self.hover[0], '') if self.hover else ''
-        self.text(h - 1, 1, self.message or self.snapshot.get('error') or ('Connecting…' if not self.ready else 'Queue paused · click ≡ to review and resume' if self.snapshot.get('paused') and count else hover_help), 6 if self.message or self.snapshot.get('error') else 2, w - 2)
+        self.text(h - 1, 1, self.message or self.snapshot.get('error') or ('Connecting…' if not self.ready else 'Queue paused · click Queue to review and resume' if self.snapshot.get('paused') and count else hover_help), 6 if self.message or self.snapshot.get('error') else 2, w - 2)
         if not self.ready and not self.pending:
             self.button(h - 2, left, 12, 'Retry', ('retry',))
         if self.pending:
@@ -1907,12 +1909,19 @@ class Chat(Surface):
                         elif hit and hit[0] == 'field':
                             choices = [('Copy text', ('copy-field', hit[1]))]
                         else:
-                            choices = [('Copy response', ('copy',)), ('Chat options…', ('manage', '')),
+                            choices = [('Copy response', ('copy',)), ('Select text', ('select',)), ('Chat options…', ('manage', '')),
                                        ('Close tab', ('close',)), ('Archive chat', ('manage', 'archive')), ('Delete chat…', ('manage', 'delete'))]
                         action = self.context_menu(choices, x, y)
                         if not action:
                             continue
                         kind = action[0]
+                    if kind == 'chat-menu':
+                        chosen = self.context_menu([('Chat details', ('details',)), ('Select text', ('select',)),
+                                                  ('Rename…', ('manage', 'rename')), ('Pin / unpin', ('pin',)),
+                                                  ('Archive chat', ('manage', 'archive')), ('Delete chat…', ('manage', 'delete'))], self.screen.getmaxyx()[1] - 24, 1)
+                        if not chosen:
+                            continue
+                        action, kind = chosen, chosen[0]
                     if kind == 'slash' or kind == 'send' and self.fields.get('prompt', '').startswith('/'):
                         kind = self.handle_slash(action[1] if kind == 'slash' else self.fields['prompt'])
                         if not kind:
