@@ -63,6 +63,23 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(self.reloaded, [self.window])
         self.assertFalse(list(self.root.rglob('*.pending')))
 
+    def test_failover_requires_verified_capacity_and_preserves_pause(self):
+        config = {'accounts': {'work': {'home': str(self.root/'work')}, 'spare': {'home': str(self.root/'spare')}}}
+        plan = {'tasks': self.tasks}
+        moved = []
+        def transfer(source, target, thread):
+            moved.append((source, target, thread))
+            return {'goal': {'objective': 'Same existing objective'}}
+        with patch.object(control, 'goal', return_value={'status': 'paused'}):
+            control.failover(self.root, plan, config, {'work': {'remainingPercent': 0}, 'spare': {'remainingPercent': 80}}, lambda:[self.window], transfer)
+        self.assertFalse(moved)
+        with patch.object(control, 'goal', return_value={'status': 'usageLimited'}):
+            control.failover(self.root, plan, config, {'work': {'remainingPercent': 0}, 'spare': {'error': 'unavailable'}}, lambda:[self.window], transfer)
+            self.assertFalse(moved)
+            control.failover(self.root, plan, config, {'work': {'remainingPercent': 0}, 'spare': {'remainingPercent': 80}}, lambda:[self.window], transfer)
+        self.assertEqual(moved, [('work', 'spare', 'chat')])
+        self.assertEqual(plan['tasks'][0]['account'], 'spare')
+
 
 if __name__ == '__main__':
     unittest.main()

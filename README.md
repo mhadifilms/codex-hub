@@ -13,6 +13,41 @@ Organize projects and chats in a clickable sidebar, read native Markdown, steer 
 
 ## Unattended goals
 
+### Shared workspace
+
+Run `codex-hub profile sync /path/to/your/codex-home` to share user instructions,
+skills, rules, custom agents, prompts, plugin cache, and noncredential preferences.
+Instructions and skills remain linked to that source so edits appear in every
+account; existing local files are retained in `profile-backups/`. Newly added
+accounts inherit the profile. Each account keeps its own login storage and
+connector authentication. Secret-bearing MCP configuration is not forwarded.
+Preferences are read when a backend starts; reconnect an idle chat to apply them.
+
+The sidebar shows the same projects and conversations in every account.
+Chat options → **Use another account…**, or
+`codex-hub move SOURCE TARGET THREAD`, transfers an idle conversation with its
+history, draft, queue, name, and pin. It releases the old writer before importing
+the history into the target account. Interrupted transfers retain the source
+history and require inspection before retrying. Linked history segments and
+budgeted goals require manual handoff. A running tool cannot change accounts
+mid-execution; wait for an idle turn boundary. Transferred goals stay paused until
+explicitly continued with their existing objective.
+
+### Hourly recovery
+
+A supervisor plan can include a `coordinator` with `account`, `thread`, and
+`prompt`. The coordinator receives one message per interval when idle, allowing
+a Hub account to inspect other chats, diagnose blockers, and arrange a handoff.
+Busy coordinators are skipped. The plan is reread each interval so account changes
+take effect. Set `failover: true` to read fresh usage for configured Hub accounts
+and transfer eligible idle chats when verified capacity reaches zero. Missing
+readings never mean zero; drafts, queues, human pauses, and goal budgets prevent
+automatic handoff. Reset credits are never consumed. The coordinator can also
+move to a spare account. Use `action: "recover"` in a control command only after diagnosing a
+failure; it can continue an active, blocked, or usage-limited goal with an empty
+queue. It never overrides a human pause or a goal budget. Reconciliation of
+remote jobs and usage availability belongs in the coordinator's instructions.
+
 `codex-hub control ACCOUNT THREAD command.json` submits a message to the chat's
 owning frontend. The JSON has `text` and optionally `objective` to arm a native
 Codex goal. Commands expire after two minutes and are skipped when a chat has

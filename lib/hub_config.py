@@ -37,7 +37,7 @@ def validate(data):
     if not isinstance(accounts, dict) or not accounts:
         raise ValueError('Configure at least one account.')
     for ident, account in accounts.items():
-        if not ID_PATTERN.fullmatch(ident) or ident in ('all', 'main', 'attach', 'tui', 'setup', 'reload', 'doctor', 'list', 'new', 'resume', 'cli', 'accounts', 'settings', 'usage', 'config', 'sidebar', 'welcome', 'picker', 'manage', 'chat', 'account-login', 'control', 'supervise'):
+        if not ID_PATTERN.fullmatch(ident) or ident in ('all', 'main', 'attach', 'tui', 'setup', 'reload', 'doctor', 'list', 'new', 'resume', 'cli', 'accounts', 'settings', 'usage', 'config', 'sidebar', 'welcome', 'picker', 'manage', 'chat', 'account-login', 'control', 'supervise', 'profile', 'move'):
             raise ValueError('Account IDs must be unique command-safe names (letters, numbers, _ or -).')
         if not isinstance(account, dict) or not isinstance(account.get('label'), str) or not account['label'].strip():
             raise ValueError('Each account needs a label.')
@@ -163,6 +163,9 @@ def add(ident, label=None, codex_home=None, description='', root=ROOT):
                     stream.write('cli_auth_credentials_store = "file"\n')
                 config.chmod(0o600)
         save(data, root)
+    if data.get('profileSource'):
+        from hub_profile import sync
+        sync(data['profileSource'], root)
     return data
 
 
