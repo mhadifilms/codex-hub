@@ -27,6 +27,8 @@ ID_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$')
 def validate(data):
     if data.get('schemaVersion') != 1:
         raise ValueError('Unsupported config version; expected schemaVersion 1.')
+    if type(data.get('sharedLibrary', False)) is not bool:
+        raise ValueError('sharedLibrary must be true or false.')
     if type(data.get('scrollLines', 1)) is not int or not 1 <= data.get('scrollLines', 1) <= 20:
         raise ValueError('scrollLines must be an integer from 1 to 20.')
     if 'codexBinary' in data and (not isinstance(data['codexBinary'], str) or not data['codexBinary'].strip()):

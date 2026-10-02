@@ -76,6 +76,18 @@ Use `-Distribution NAME` if your WSL distribution has another name. The installe
 | Selection | Click to position the composer caret; drag to select text. **Copy** copies selection or the latest response. The chat menu opens tmux text selection mode. |
 | Images and links | **+** attaches local images. Preview opens the original image in the system viewer at full resolution. Click links to open them. |
 | Persistence | Reopen the hub to restore open chats, drafts, model choices, and paused queues. Close stops a tab and keeps history; archive hides history until restored. |
+
+### Shared chat library
+
+Set `"sharedLibrary": true` in the configuration shown by `codex-hub config`, then run
+`codex-hub setup --reload`. Every account's sidebar shows the same combined chats,
+projects, pins, and archives. Opening a chat switches to its owning account;
+renaming or archiving it updates the shared view. New chats use the selected account.
+
+The library reads each account's live history rather than copying databases.
+Sign-ins, model settings, drafts, and running chats remain with their owning account.
+It does not synchronize with ChatGPT cloud history or let two accounts write the same
+conversation. Set `"sharedLibrary": false` to return to separate sidebars.
 | Exit | Click **Exit** to detach. Chats keep running in tmux until stopped or closed. |
 
 Icons show labels on hover. **☰** collapses the sidebar for more room; the layout supports an 80-column terminal.

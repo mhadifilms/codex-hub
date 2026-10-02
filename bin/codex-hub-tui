@@ -43,6 +43,10 @@ def account_session(slot):
     return hub_config.session(slot, ROOT)
 
 
+def library_slots(slot):
+    return list(LABELS) if CONFIG.get('sharedLibrary', False) else [slot]
+
+
 reload_config()
 
 
@@ -163,10 +167,10 @@ def history(slot, archived=False):
                 if not records.get(row['id'], {}).get('deleted')
                 and bool(records.get(row['id'], {}).get('archived', archived)) == archived]
         rows += local_rows(all_ids)
-        # Unsaved drafts may already have a database row with has_user_event=0.
+        # Drafts and imported desktop histories may have has_user_event=0.
         present = {row['id'] for row in rows}
-        rows += [row for row in local_rows(present) if row['id'] in all_ids and row.get('open')
-                 and row.get('has_draft') and not row.get('has_content')]
+        rows += [row for row in local_rows(present) if row['id'] in all_ids and
+                 (row.get('importedHistory') or row.get('open') and row.get('has_draft') and not row.get('has_content'))]
         return rows, ''
     except sqlite3.Error:
         return local_rows(), 'Saved chats temporarily unavailable'
@@ -709,10 +713,10 @@ class Surface:
             self.offset = max(0, self.offset - 1)
         return None
 
-    def popup(self, mode, *args):
+    def popup(self, mode, *args, slot=None):
         tmux('display-popup', '-E', '-x', 'C', '-y', 'C', '-w', '85%', '-h', '85%',
              '-s', 'bg=colour234,fg=colour253', '-S', 'fg=colour238',
-             '-t', os.environ['TMUX_PANE'], '-T', ' Codex ', command(mode, self.slot, *args))
+             '-t', os.environ['TMUX_PANE'], '-T', ' Codex ', command(mode, slot or self.slot, *args))
 
     def context_menu(self, choices, x, y):
         """Use the normal redraw loop for an anchored mouse menu."""
@@ -822,23 +826,31 @@ class Sidebar(Surface):
         if account_session(self.slot) in clients.splitlines() and time.time() - self.usage.get('checkedAt', 0) >= 60 and (not worker or not worker.is_alive()):
             self.usage_worker = threading.Thread(target=refresh_usage, args=(self.slot,), daemon=True)
             self.usage_worker.start()
-        self.live = sorted([w for w in windows() if w['slot'] == self.slot], key=lambda w: float(w['created'] or int(w['id'][1:])), reverse=True)
-        self.live = [w for w in self.live if w['kind'] != 'chat' or w['engine'] != 'tui' or visible_record(self.data.get('chats', {}).get(self.slot, {}).get(w['thread'], {}))]
-        records = self.data.get('chats', {}).get(self.slot, {})
-        self.live = [w for w in self.live if not records.get(w['thread'], {}).get('archived') and not records.get(w['thread'], {}).get('deleted')]
-        self.saved, self.history_error = history(self.slot, getattr(self, 'archived', False))
-        self.pins = self.data.get('pins', {}).get(self.slot, [])
-        names = self.data.get('names', {}).get(self.slot, {})
+        slots = library_slots(self.slot)
+        self.live = sorted([w for w in windows() if w['slot'] in slots and (w['kind'] == 'chat' or w['slot'] == self.slot)], key=lambda w: float(w['created'] or int(w['id'][1:])), reverse=True)
+        def record(row):
+            return self.data.get('chats', {}).get(row['slot'], {}).get(row.get('thread', row['id']), {})
+        self.live = [w for w in self.live if (w['kind'] != 'chat' or w['engine'] != 'tui' or visible_record(record(w)))
+                     and not record(w).get('archived') and not record(w).get('deleted')]
+        self.saved, errors = [], []
+        for slot in slots:
+            rows, error = history(slot, getattr(self, 'archived', False))
+            self.saved.extend({**row, 'slot': slot} for row in rows)
+            if error:
+                errors.append(LABELS[slot][0] + ': ' + error)
+        self.history_error = '; '.join(errors)
+        self.pins = [key for slot in slots for key in self.data.get('pins', {}).get(slot, [])]
         for row in self.saved:
+            names = self.data.get('names', {}).get(row['slot'], {})
             row['title'] = names.get(row['id'], row['title'])
-            if not records.get(row['id'], {}).get('has_content', True) and records.get(row['id'], {}).get('has_draft'):
+            if not record(row).get('has_content', True) and record(row).get('has_draft'):
                 row['title'] = 'Draft'
         for window in self.live:
-            if not records.get(window['thread'], {}).get('has_content', True) and records.get(window['thread'], {}).get('has_draft'):
+            if not record(window).get('has_content', True) and record(window).get('has_draft'):
                 window['name'] = 'Draft'
         self.selected = self.data.get('selected', {}).get(self.slot)
         self.collapsed = self.data.get('collapsed', {}).get(self.slot, [])
-        self.projects = list(dict.fromkeys([*account_projects(self.slot, self.data),
+        self.projects = list(dict.fromkeys([*(p for slot in slots for p in account_projects(slot, self.data)),
                             *(w['path'] for w in self.live if w['path']),
                             *(r['cwd'] for r in self.saved)]))
         self.current = next((w['id'] for w in self.live if w['sidebar'] == os.environ.get('TMUX_PANE')), '')
@@ -847,11 +859,15 @@ class Sidebar(Surface):
     def rows(self):
         rows = []
         query = self.fields.get('search', '').lower()
+        def pinned(row, live=False):
+            return (pin_key(row) if live else row['id']) in self.data.get('pins', {}).get(row['slot'], [])
+        def chat_key(row, live=False):
+            return row['slot'], row['thread'] if live else row['id']
         if getattr(self, 'archived', False):
             return [('saved', row['title'], row) for row in sorted(self.saved, key=lambda row: row.get('updated_at', 0), reverse=True)
                     if not query or query in row['title'].lower()]
-        pinned_live = [w for w in self.live if pin_key(w) in self.pins and (not query or query in w['name'].lower())]
-        pinned_saved = [r for r in self.saved if r['id'] in self.pins and r['id'] not in {w['thread'] for w in self.live}
+        pinned_live = [w for w in self.live if pinned(w, True) and (not query or query in w['name'].lower())]
+        pinned_saved = [r for r in self.saved if pinned(r) and chat_key(r) not in {chat_key(w, True) for w in self.live}
                         and (not query or query in r['title'].lower())]
         if pinned_live or pinned_saved:
             rows.append(('label', 'Pinned', None))
@@ -860,7 +876,7 @@ class Sidebar(Surface):
             rows.append(('label', 'Projects', None))
         for path in self.projects:
             live = [w for w in self.live if w['path'] == path and w['kind'] == 'chat']
-            saved = [r for r in self.saved if r['cwd'] == path and r['id'] not in {w['thread'] for w in live}]
+            saved = [r for r in self.saved if r['cwd'] == path and chat_key(r) not in {chat_key(w, True) for w in live}]
             matches = query in path.lower()
             if query and not matches:
                 live = [w for w in live if query in w['name'].lower()]
@@ -869,13 +885,13 @@ class Sidebar(Surface):
                     continue
             rows.append(('folder', path, None))
             if path not in self.collapsed or query:
-                chats = [('live', w['name'], w) for w in live if pin_key(w) not in self.pins]
-                chats += [('saved', r['title'] or 'Untitled chat', r) for r in saved if r['id'] not in self.pins]
+                chats = [('live', w['name'], w) for w in live if not pinned(w, True)]
+                chats += [('saved', r['title'] or 'Untitled chat', r) for r in saved if not pinned(r)]
                 def recency(entry):
                     kind, _, row = entry
                     if kind == 'saved':
                         return row.get('updated_at', 0)
-                    record = self.data.get('chats', {}).get(self.slot, {}).get(row['thread'], {})
+                    record = self.data.get('chats', {}).get(row['slot'], {}).get(row['thread'], {})
                     return max(float(row['created'] or 0), record.get('updated_at', 0))
                 rows += sorted(chats, key=recency, reverse=True)
                 if not live and not saved:
@@ -928,9 +944,11 @@ class Sidebar(Surface):
                 self.text(y, 5, self.shorten(label, w - 11), color, w - 11)
                 self.hits.append((y, 2, 1, w - 7, action))
                 if kind == 'live':
-                    self.button(y, w - 5, 3, '···', ('manage', row['id']), quiet=True, selected=active)
+                    self.button(y, w - 5, 3, '···', ('manage-owner', row['slot'], row['id']), quiet=True, selected=active)
                 else:
-                    self.button(y, w - 5, 3, '···', ('manage', 'thread:' + row['id']), quiet=True)
+                    self.button(y, w - 5, 3, '···', ('manage-owner', row['slot'], 'thread:' + row['id']), quiet=True)
+                if self.hover == action:
+                    self.message = 'Runs in ' + LABELS[row['slot']][0]
             else:
                 self.text(y, 5 if kind == 'empty' else 2, label, 2, w - 6)
         if not rows:
@@ -972,7 +990,7 @@ class Sidebar(Surface):
                         if self.archived:
                             choices += [('Restore chat', ('manage', target, 'unarchive'))]
                         else:
-                            pinned = (pin_key(row) if hit[0] == 'live' else row['id']) in self.pins
+                            pinned = (pin_key(row) if hit[0] == 'live' else row['id']) in self.data.get('pins', {}).get(row['slot'], [])
                             choices += [('Unpin chat' if pinned else 'Pin chat', ('manage', target, 'pin'))]
                             if hit[0] == 'live':
                                 choices += [('Close tab', ('manage', target, 'close'))]
@@ -988,6 +1006,9 @@ class Sidebar(Surface):
                     if not action:
                         continue
                     kind = action[0]
+                    if kind == 'manage':
+                        action = ('manage-owner', row['slot'], *action[1:])
+                        kind = action[0]
                 if kind == 'resize':
                     self.fit()
                 elif kind == 'account':
@@ -1024,9 +1045,11 @@ class Sidebar(Surface):
                 elif kind == 'saved':
                     row = action[1]
                     if self.archived:
-                        self.popup('manage', 'thread:' + row['id'])
+                        self.popup('manage', 'thread:' + row['id'], slot=row['slot'])
                     else:
-                        new_chat(self.slot, row['cwd'], row['title'], row['id'])
+                        new_chat(row['slot'], row['cwd'], row['title'], row['id'])
+                elif kind == 'manage-owner':
+                    self.popup('manage', *action[2:], slot=action[1])
                 elif kind == 'manage':
                     self.popup('manage', *action[1:])
                 elif kind == 'upgrade' and self.upgrade:
