@@ -115,7 +115,7 @@ def account_projects(slot, data=None):
 
 
 def visible_record(record):
-    return not record.get('deleted') and (record.get('has_content', record.get('title', 'New chat') != 'New chat')
+    return not record.get('deleted') and not record.get('movedTo') and (record.get('has_content', record.get('title', 'New chat') != 'New chat')
                                          or record.get('open') and record.get('has_draft', False))
 
 
@@ -166,6 +166,7 @@ def history(slot, archived=False):
                               'AND has_user_event = 1 ORDER BY updated_at DESC', (int(archived),)).fetchall()
         rows = [{**dict(row), 'archived': archived, 'cwd': str(Path(row['cwd']).resolve())} for row in rows
                 if not records.get(row['id'], {}).get('deleted')
+                and not records.get(row['id'], {}).get('movedTo')
                 and bool(records.get(row['id'], {}).get('archived', archived)) == archived]
         rows += local_rows(all_ids)
         # Drafts and imported desktop histories may have has_user_event=0.
@@ -361,11 +362,13 @@ def new_chat(slot, path, title='New chat', thread=None, resume_picker=False, pro
 def reload_chat(window, force=False):
     if window['engine'] != 'tui' or not window['thread']:
         raise ValueError('Only a connected enhanced chat can be reloaded.')
-    if window['busy'] == '1' or not force and window['busy'] != '0':
+    dead = tmux('display-message', '-p', '-t', window['pane'], '#{pane_dead}') == '1'
+    if not dead and (window['busy'] == '1' or not force and window['busy'] != '0'):
         raise ValueError('Stop the turn and resolve pending requests before reloading. Older chats need explicit restart confirmation.')
     # SIGTERM lets the frontend persist its draft/queue and close its backend.
     pid = int(tmux('display-message', '-p', '-t', window['pane'], '#{pane_pid}'))
-    os.kill(pid, signal.SIGTERM)
+    if not dead:
+        os.kill(pid, signal.SIGTERM)
     until = time.monotonic() + 6
     while tmux('display-message', '-p', '-t', window['pane'], '#{pane_dead}') != '1':
         if time.monotonic() >= until:
@@ -1885,10 +1888,12 @@ class Chat(Surface):
                     try:
                         result = self.pending.result()
                         if self.pending_action == 'control':
-                            hub_control.finish(self.control_claim, result['status'], result.get('reason', ''))
+                            if result['status'] == 'prepared':
+                                self.stopping = True
                             if result['status'] == 'sent':
                                 self.approval_mode = 'auto'
                                 self.name_from_prompt(self.control_text)
+                            hub_control.finish(self.control_claim, result['status'], result.get('reason', ''), goal=result.get('goal'))
                         succeeded = True
                         if self.pending_action == 'bootstrap':
                             self.ready = True
@@ -2248,6 +2253,8 @@ class Manage(Surface):
             if not archived:
                 self.button(8, 23, 18, 'Unpin chat' if pinned else 'Pin chat', ('pin',))
             if not saved:
+                if CONFIG.get('sharedLibrary') and len(LABELS) > 1:
+                    self.button(10, 3, 28, 'Use another account…', ('account',))
                 self.text(11, 3, 'Closing stops this chat. Its saved history is kept.', 2)
                 self.button(13, 3, 24, 'Confirm close' if confirming else 'Close tab', ('close',))
                 if window['engine'] == 'tui':
@@ -2262,6 +2269,16 @@ class Manage(Surface):
             self.text(h - 5, 3, self.message, 6, w - 6)
             self.button(h - 3, 3, 18, 'Cancel', ('cancel',))
             action = self.event()
+            if action == ('account',):
+                selected = self.choice('Continue with account', [(label[0], slot) for slot, label in LABELS.items() if slot != self.slot], dropdown=True)
+                if selected:
+                    try:
+                        import hub_transfer
+                        hub_transfer.move(sys.modules[__name__], self.slot, selected, key)
+                        return
+                    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+                        self.error(error)
+                continue
             if action == ('reload',):
                 if not reloading:
                     reloading = True
@@ -2339,11 +2356,24 @@ def account_command(args):
 def main():
     args = sys.argv[1:] or ['attach']
     mode = args[0]
+    if mode == 'profile':
+        if len(args) != 3 or args[1] != 'sync':
+            raise ValueError('Usage: codex-hub profile sync CODEX_HOME')
+        import hub_profile
+        hub_profile.sync(args[2], ROOT)
+        print('Shared skills, instructions, plugin cache, and preferences enabled.')
+        return
+    if mode == 'move':
+        if len(args) != 4:
+            raise ValueError('Usage: codex-hub move SOURCE_ACCOUNT TARGET_ACCOUNT THREAD')
+        import hub_transfer
+        print(json.dumps(hub_transfer.move(sys.modules[__name__], *args[1:])))
+        return
     if mode == 'control':
         if len(args) != 4 or args[1] not in LABELS:
             raise ValueError('Usage: codex-hub control ACCOUNT THREAD COMMAND.json')
         data = json.loads(Path(args[3]).read_text())
-        print(hub_control.submit(ROOT, args[1], args[2], data['text'], data.get('objective'), data.get('requireActive', False)))
+        print(hub_control.submit(ROOT, args[1], args[2], data['text'], data.get('objective'), data.get('requireActive', False), data.get('action', 'send')))
         return
     if mode == 'supervise':
         if len(args) != 2:
@@ -2353,7 +2383,13 @@ def main():
             for window in result:
                 window['control'] = tmux('show-option', '-wv', '-t', window['id'], '@hub_control', check=False)
             return result
-        hub_control.supervise(ROOT, CONFIG, args[1], controlled_windows, reload_chat)
+        def read_usage(slot):
+            result = subprocess.run([str(SELF.parent / 'codex-hub-usage'), slot], capture_output=True, text=True, timeout=35)
+            return json.loads(result.stdout)['accounts'][slot]
+        def transfer(source, target, thread):
+            import hub_transfer
+            return hub_transfer.move(sys.modules[__name__], source, target, thread)
+        hub_control.supervise(ROOT, CONFIG, args[1], controlled_windows, reload_chat, read_usage, transfer)
         return
     if mode in ('--version', '-V'):
         print('Codex Hub ' + hub_config.VERSION)
@@ -2372,6 +2408,8 @@ def main():
               'codex-hub usage [ACCOUNT|all]      Read usage snapshots\n'
               'codex-hub control ACCOUNT THREAD COMMAND.json\n'
               'codex-hub supervise PLAN.json     Monitor selected native goals\n'
+              'codex-hub profile sync CODEX_HOME Share skills and preferences\n'
+              'codex-hub move SOURCE TARGET THREAD\n'
               'codex-hub --version')
         return
     if mode == 'config':
