@@ -13,6 +13,23 @@ from test_hub import REPO, hub
 
 
 class NativeIntegration(test_hub.HubIntegration):
+    def test_control_uses_owning_frontend(self):
+        import hub_control
+        hub.new_chat('1', self.project)
+        type(self).chat = self.account_window('1')
+        self.wait_for(lambda: 'fixture-sol' in self.capture() and 'Connecting' not in self.capture())
+        thread = hub.tmux('show-option', '-wv', '-t', self.chat['id'], '@hub_thread')
+        ident = hub_control.submit(self.root, '1', thread, 'Supervised task', 'A durable task goal')
+        result = hub_control.directory(self.root, '1', thread) / (ident + '.result')
+        self.wait_for(result.exists)
+        self.assertEqual(json.loads(result.read_text())['status'], 'sent')
+        calls = self.rpc()
+        sent = next(c for c in calls if c['method'] == 'turn/start')
+        self.assertEqual(sent['params']['input'][0]['text'], 'Supervised task')
+        self.assertEqual(sent['params']['approvalsReviewer'], 'auto_review')
+        self.assertTrue(any(c['method'] == 'thread/goal/set' for c in calls))
+        self.assertFalse((self.root / '2/rpc.jsonl').exists())
+
     @classmethod
     def setUpClass(cls):
         super().setUpClass()

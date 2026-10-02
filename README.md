@@ -11,6 +11,25 @@ Organize projects and chats in a clickable sidebar, read native Markdown, steer 
 
 ![Codex Hub](docs/demo.gif)
 
+## Unattended goals
+
+`codex-hub control ACCOUNT THREAD command.json` submits a message to the chat's
+owning frontend. The JSON has `text` and optionally `objective` to arm a native
+Codex goal. Commands expire after two minutes and are skipped when a chat has
+running work, approvals, queued messages, or an unsent draft. Results are stored
+privately under the Hub configuration's `control/` directory. A claimed command
+or uncertain dispatch requires manual inspection; it is never automatically replayed.
+
+`codex-hub supervise plan.json` monitors selected goals without making model calls
+on another account. Run it in a persistent terminal or tmux window. A plan contains
+`hours` (default 12), `intervalSeconds` (default 3600), and a `tasks` array whose
+entries have `account`, `thread`, and a continuation `prompt`. Only an active goal
+observed idle on two checks can receive that prompt. Paused, blocked, completed,
+or limited goals stay stopped. Drafts and queues are preserved. Closed chats stay
+closed. Idle older frontends are reconnected before a later check can continue them.
+The latest snapshot is `supervisor-status.json`; checks are retained in
+`supervisor-events.jsonl`. The computer and tmux must remain running.
+
 ## Install
 
 Requires Python **3.10+**, tmux **3.2+**, Codex CLI **0.159+**, and a terminal with mouse reporting and 256 colors.
