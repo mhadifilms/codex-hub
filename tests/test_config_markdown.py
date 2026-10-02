@@ -22,6 +22,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(hub_config.load(root)['scrollLines'], 3)
             with self.assertRaises(ValueError):
                 hub_config.preferences(root, scrollLines=0)
+            hub_config.preferences(root, sharedLibrary=True)
+            self.assertTrue(hub_config.load(root)['sharedLibrary'])
+            with self.assertRaises(ValueError):
+                hub_config.preferences(root, sharedLibrary='true')
 
     def test_arbitrary_accounts_and_defaults(self):
         with tempfile.TemporaryDirectory() as temporary:
