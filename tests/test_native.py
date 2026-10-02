@@ -29,6 +29,8 @@ class NativeIntegration(test_hub.HubIntegration):
         self.assertEqual(sent['params']['approvalsReviewer'], 'auto_review')
         self.assertTrue(any(c['method'] == 'thread/goal/set' for c in calls))
         self.assertFalse((self.root / '2/rpc.jsonl').exists())
+        self.wait_for(lambda: hub.state().get('chats', {}).get('1', {}).get(thread, {}).get('has_content'))
+        self.assertEqual(hub.state()['names']['1'][thread], 'Supervised task')
 
     @classmethod
     def setUpClass(cls):

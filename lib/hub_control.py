@@ -49,6 +49,7 @@ def poll(chat, root):
         finish(claimed, 'skipped', 'Chat is busy, has user work, or command expired.')
         return
     chat.control_claim = claimed
+    chat.control_text = command['text']
     chat.pending_action = 'control'
     chat.pending = chat.executor.submit(execute, chat.runtime, chat.slot, chat.ident,
                                        command, chat.model, chat.effort)

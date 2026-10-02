@@ -1888,6 +1888,7 @@ class Chat(Surface):
                             hub_control.finish(self.control_claim, result['status'], result.get('reason', ''))
                             if result['status'] == 'sent':
                                 self.approval_mode = 'auto'
+                                self.name_from_prompt(self.control_text)
                         succeeded = True
                         if self.pending_action == 'bootstrap':
                             self.ready = True
@@ -2369,6 +2370,8 @@ def main():
               'codex-hub doctor                   Show hub/backend versions and path\n'
               'codex-hub reload [ACCOUNT]        Reconnect idle enhanced chats\n'
               'codex-hub usage [ACCOUNT|all]      Read usage snapshots\n'
+              'codex-hub control ACCOUNT THREAD COMMAND.json\n'
+              'codex-hub supervise PLAN.json     Monitor selected native goals\n'
               'codex-hub --version')
         return
     if mode == 'config':
