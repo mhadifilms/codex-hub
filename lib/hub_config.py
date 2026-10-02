@@ -37,7 +37,7 @@ def validate(data):
     if not isinstance(accounts, dict) or not accounts:
         raise ValueError('Configure at least one account.')
     for ident, account in accounts.items():
-        if not ID_PATTERN.fullmatch(ident) or ident in ('all', 'main', 'attach', 'tui', 'setup', 'reload', 'doctor', 'list', 'new', 'resume', 'cli', 'accounts', 'settings', 'usage', 'config', 'sidebar', 'welcome', 'picker', 'manage', 'chat', 'account-login'):
+        if not ID_PATTERN.fullmatch(ident) or ident in ('all', 'main', 'attach', 'tui', 'setup', 'reload', 'doctor', 'list', 'new', 'resume', 'cli', 'accounts', 'settings', 'usage', 'config', 'sidebar', 'welcome', 'picker', 'manage', 'chat', 'account-login', 'control', 'supervise'):
             raise ValueError('Account IDs must be unique command-safe names (letters, numbers, _ or -).')
         if not isinstance(account, dict) or not isinstance(account.get('label'), str) or not account['label'].strip():
             raise ValueError('Each account needs a label.')

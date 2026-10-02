@@ -22,6 +22,7 @@ SELF = Path(__file__).resolve()
 LIB = SELF.parent.parent / 'lib'
 sys.path.insert(0, str(LIB if (LIB / 'hub_config.py').is_file() else SELF.parent.parent / 'share/codex-hub'))
 import hub_config
+import hub_control
 from hub_platform import clipboard_command, open_command
 ROOT = hub_config.ROOT
 SOCKET = ROOT / 'tmux.sock'
@@ -1861,6 +1862,7 @@ class Chat(Surface):
         self.last_preferences = 0
         self.cached_usage, self.sidebar_hidden = {}, False
         self.window_id = tmux('display-message', '-p', '-t', os.environ['TMUX_PANE'], '#{window_id}')
+        tmux('set-option', '-w', '-t', self.window_id, '@hub_control', '1')
         tmux('set-option', '-w', '-t', self.window_id, '@hub_busy', '1')
         self.busy_status = True
         self.enter_sends, self.pasting, self.steer_after_send = True, False, False
@@ -1881,7 +1883,12 @@ class Chat(Surface):
                 if self.pending and self.pending.done():
                     succeeded = False
                     try:
-                        self.pending.result()
+                        result = self.pending.result()
+                        if self.pending_action == 'control':
+                            hub_control.finish(self.control_claim, result['status'], result.get('reason', ''))
+                            if result['status'] == 'sent':
+                                self.approval_mode = 'auto'
+                                self.name_from_prompt(self.control_text)
                         succeeded = True
                         if self.pending_action == 'bootstrap':
                             self.ready = True
@@ -1898,6 +1905,8 @@ class Chat(Surface):
                                 self.images = []
                         self.message = ''
                     except Exception as error:
+                        if self.pending_action == 'control':
+                            hub_control.finish(self.control_claim, 'uncertain', str(error))
                         self.error(error)
                     finally:
                         bootstrap = self.pending_action == 'bootstrap'
@@ -1917,6 +1926,7 @@ class Chat(Surface):
                     finally:
                         self.runtime.lock.release()
                 self.save_draft()
+                hub_control.poll(self, ROOT)
                 if time.monotonic() - self.last_preferences > 2:
                     self.scroll_step = hub_config.load(ROOT).get('scrollLines', 1)
                     self.cached_usage = usage_snapshot(self.slot)
@@ -2329,6 +2339,22 @@ def account_command(args):
 def main():
     args = sys.argv[1:] or ['attach']
     mode = args[0]
+    if mode == 'control':
+        if len(args) != 4 or args[1] not in LABELS:
+            raise ValueError('Usage: codex-hub control ACCOUNT THREAD COMMAND.json')
+        data = json.loads(Path(args[3]).read_text())
+        print(hub_control.submit(ROOT, args[1], args[2], data['text'], data.get('objective'), data.get('requireActive', False)))
+        return
+    if mode == 'supervise':
+        if len(args) != 2:
+            raise ValueError('Usage: codex-hub supervise PLAN.json')
+        def controlled_windows():
+            result = windows()
+            for window in result:
+                window['control'] = tmux('show-option', '-wv', '-t', window['id'], '@hub_control', check=False)
+            return result
+        hub_control.supervise(ROOT, CONFIG, args[1], controlled_windows, reload_chat)
+        return
     if mode in ('--version', '-V'):
         print('Codex Hub ' + hub_config.VERSION)
         return
@@ -2344,6 +2370,8 @@ def main():
               'codex-hub doctor                   Show hub/backend versions and path\n'
               'codex-hub reload [ACCOUNT]        Reconnect idle enhanced chats\n'
               'codex-hub usage [ACCOUNT|all]      Read usage snapshots\n'
+              'codex-hub control ACCOUNT THREAD COMMAND.json\n'
+              'codex-hub supervise PLAN.json     Monitor selected native goals\n'
               'codex-hub --version')
         return
     if mode == 'config':
